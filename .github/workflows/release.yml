@@ -1,0 +1,88 @@
+name: Release (unsigned IPA)
+
+# Produces an UNSIGNED .ipa for sideloading via AltStore/SideStore.
+# No Apple ID, certificate, or provisioning profile ever touches this pipeline —
+# AltStore/SideStore perform real code signing locally on your machine at install time.
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode (latest stable)
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Cache Swift Package Manager artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+            Packages/IPTVCore/.build
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Run IPTVCore package unit tests
+        run: swift test --package-path Packages/IPTVCore
+
+      - name: Build unsigned .app for device
+        run: |
+          xcodebuild build \
+            -project IPTVPlayer.xcodeproj \
+            -scheme IPTVPlayer \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package .app into an .ipa (Payload/ zip)
+        run: |
+          set -euo pipefail
+          APP_PATH="build/Build/Products/Release-iphoneos/IPTVPlayer.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Expected app bundle not found at $APP_PATH" >&2
+            find build/Build/Products -maxdepth 3 >&2 || true
+            exit 1
+          fi
+          mkdir -p ipa_root/Payload
+          cp -R "$APP_PATH" ipa_root/Payload/
+          cd ipa_root
+          zip -r -y ../IPTVPlayer-unsigned.ipa Payload
+          cd ..
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: IPTVPlayer-unsigned-ipa
+          path: IPTVPlayer-unsigned.ipa
+          retention-days: 30
+
+      - name: Attach IPA to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: IPTVPlayer-unsigned.ipa
+          body: |
+            Unsigned IPA — install by sideloading with AltStore or SideStore.
+            AltStore/SideStore will sign this on-device with your free Apple ID
+            and handle the 7-day free-signature refresh automatically.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

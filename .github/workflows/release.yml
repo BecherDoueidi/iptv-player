@@ -38,6 +38,15 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Prepare a temporary keychain for Keychain-dependent unit tests
+        run: |
+          security create-keychain -p "" test-run.keychain
+          security set-keychain-settings test-run.keychain
+          security unlock-keychain -p "" test-run.keychain
+          EXISTING=$(security list-keychains -d user | sed 's/"//g' | xargs)
+          security list-keychains -d user -s test-run.keychain $EXISTING
+          security default-keychain -s test-run.keychain
+
       - name: Run IPTVCore package unit tests
         run: swift test --package-path Packages/IPTVCore
 
@@ -81,8 +90,8 @@ jobs:
         with:
           files: IPTVPlayer-unsigned.ipa
           body: |
-            Unsigned IPA — install by sideloading with AltStore or SideStore.
-            AltStore/SideStore will sign this on-device with your free Apple ID
-            and handle the 7-day free-signature refresh automatically.
+            Unsigned IPA — install by sideloading with Sideloadly, AltStore, or
+            SideStore. Whichever tool you use will sign this on-device with your
+            free Apple ID; re-run it every ~7 days to refresh the signature.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

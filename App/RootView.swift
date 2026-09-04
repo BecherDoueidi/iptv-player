@@ -1,19 +1,17 @@
 import SwiftUI
+import SwiftData
 import IPTVCore
 
 struct RootView: View {
+    @Query private var accounts: [ProviderAccount]
+    @Environment(\.appDependencies) private var dependencies
+
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "play.rectangle.fill")
-                .font(.system(size: 48))
-            Text("IPTV Player")
-                .font(.title)
-                .bold()
-            Text(PipelineStatus.message)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+        if let account = accounts.first {
+            SignedInPlaceholderView(account: account)
+        } else {
+            LoginView(dependencies: dependencies)
         }
-        .padding()
     }
 }
 

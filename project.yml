@@ -22,6 +22,7 @@ targets:
       - path: App
         excludes:
           - "Resources/Info.plist"
+      - path: Features
     info:
       path: App/Resources/Info.plist
     entitlements:

@@ -39,6 +39,15 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Prepare a temporary keychain for Keychain-dependent unit tests
+        run: |
+          security create-keychain -p "" test-run.keychain
+          security set-keychain-settings test-run.keychain
+          security unlock-keychain -p "" test-run.keychain
+          EXISTING=$(security list-keychains -d user | sed 's/"//g' | xargs)
+          security list-keychains -d user -s test-run.keychain $EXISTING
+          security default-keychain -s test-run.keychain
+
       - name: Run IPTVCore package unit tests (no simulator)
         run: swift test --package-path Packages/IPTVCore
 

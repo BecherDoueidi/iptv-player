@@ -23,10 +23,12 @@ until that's confirmed on a real device.
    place actual compilation happens.
 4. **The `.ipa` produced is intentionally unsigned.** No Apple ID, certificate,
    or provisioning profile ever touches CI. This is the standard distribution
-   format for hobbyist iOS apps sideloaded via AltStore/SideStore.
-5. **AltStore or SideStore** (free, open-source, running on your Windows PC)
-   sign the `.ipa` in place with your own free Apple ID when you install it,
-   and handle the mandatory 7-day free-signature refresh automatically.
+   format for hobbyist iOS apps sideloaded via tools like Sideloadly/AltStore.
+5. **[Sideloadly](https://sideloadly.io/)** (free, runs on Windows) signs the
+   `.ipa` with your own free Apple ID and installs it over USB. Unlike
+   AltStore/AltServer it has no persistent background service — you just run
+   it again whenever you need to (re-)install, including the mandatory 7-day
+   free-signature refresh.
 
 ## Workflows
 
@@ -44,17 +46,20 @@ until that's confirmed on a real device.
    the Actions tab).
 2. Download `IPTVPlayer-unsigned.ipa` from the workflow run's artifacts (or
    the GitHub Release page).
-3. Install **[AltServer](https://altstore.io/)** (Windows build available) or
-   set up **[SideStore](https://sidestore.io/)** — either works; SideStore
-   needs an AltServer-assisted one-time bootstrap, then can refresh more
-   independently afterward. Pick one and stick with it.
-4. Plug in your iPhone (or connect over the same Wi-Fi, depending on the tool)
-   and use "Install IPA" / drag-and-drop the downloaded `.ipa` file. You'll be
-   prompted for your Apple ID the first time — this stays local to
-   AltServer/SideStore and is never seen by this project's code or CI.
-5. The app will expire in 7 days unless AltServer/SideStore refreshes it —
-   keep AltServer reachable on your PC periodically (or rely on SideStore's
-   background refresh) so this happens automatically.
+3. Install **[Sideloadly](https://sideloadly.io/)** on your Windows PC (also
+   installs the Apple Mobile Device Support drivers it needs for USB, if you
+   don't already have iTunes). It's free — no license, no subscription.
+4. Plug your iPhone into the PC via USB (trust the computer on the phone if
+   prompted). In Sideloadly, drag in `IPTVPlayer-unsigned.ipa`, enter your
+   Apple ID when prompted, and click Start. Your Apple ID is only used
+   locally by Sideloadly to request a free signing certificate from Apple —
+   it never touches this project's code or CI.
+5. The installed app expires after **7 days** (a hard Apple restriction on
+   free, non-paid-Program signing — not something Sideloadly or this project
+   can avoid). Re-run Sideloadly with the same `.ipa` before then to refresh
+   it. There's no automatic background refresh with this tool, unlike
+   AltStore/SideStore — it's a manual once-a-week rerun in exchange for a
+   simpler, no-background-service setup.
 
 ## Local development notes (if you ever get Mac access)
 

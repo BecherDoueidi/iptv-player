@@ -9,11 +9,23 @@ public enum DownloadError: Error {
 /// received on the main queue (`delegateQueue: .main`) specifically so they can touch
 /// SwiftData's `ModelContext` directly without cross-actor `Sendable` machinery — a
 /// deliberate simplification appropriate for a personal app, not a general pattern.
+///
+/// Transfers are *segmented*: panels routinely close the connection long before the
+/// declared `Content-Length`, which `URLSession` reports as a perfectly successful
+/// (but truncated) download. Each segment is appended to a `.part` file and the next
+/// segment is requested with `Range: bytes=<offset>-`, so a stalled transfer continues
+/// where it stopped instead of silently producing a broken file.
 @MainActor
 public final class DownloadManager: NSObject {
     public static let backgroundSessionIdentifier = "com.personal.iptvplayer.downloads"
     private static let minimumValidFileSizeBytes: Int64 = 100_000 // sanity floor, not a real size estimate
     private static let minimumFreeDiskSpaceBytes: Int64 = 200_000_000 // 200 MB safety margin
+    /// Generous, because a flaky panel may drop the connection many times over a
+    /// multi-gigabyte file — but bounded, so a server that will never serve the whole
+    /// file fails visibly instead of retrying forever.
+    private static let maximumSegmentAttempts = 500
+    /// Sent because some panels truncate or refuse transfers for unrecognised clients.
+    private static let playerUserAgent = "VLC/3.0.20 LibVLC/3.0.20"
 
     private var session: URLSession!
     private var modelContext: ModelContext?
@@ -23,6 +35,10 @@ public final class DownloadManager: NSObject {
     /// Avoids a SwiftData fetch inside `didWriteData`, which fires many times per
     /// second — a query per callback on the main thread was starving the transfer.
     private var downloadsByContentKey: [String: Download] = [:]
+    /// Bytes already on disk when the in-flight segment started, so progress reported
+    /// by the current (ranged) task can be shown as progress through the whole file.
+    private var segmentBaseBytes: [String: Int64] = [:]
+    private var segmentAttempts: [String: Int] = [:]
 
     // `nonisolated` so this can be constructed from AppDependencies' own nonisolated
     // init (which itself must stay nonisolated — see EnvironmentKey.defaultValue).
@@ -33,6 +49,7 @@ public final class DownloadManager: NSObject {
         let config = URLSessionConfiguration.background(withIdentifier: Self.backgroundSessionIdentifier)
         config.isDiscretionary = false
         config.sessionSendsLaunchEvents = true
+        config.timeoutIntervalForRequest = 60
         session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }
 
@@ -73,38 +90,30 @@ public final class DownloadManager: NSObject {
         )
         modelContext.insert(download)
         downloadsByContentKey[contentKey] = download
+        // A fresh enqueue starts from zero — drop any partial left by a previous attempt.
+        try? FileManager.default.removeItem(at: partFileURL(for: contentKey))
+        segmentAttempts[contentKey] = 0
         try? modelContext.save()
 
-        startTask(for: download, url: sourceURL)
+        startSegment(for: download)
     }
 
     public func pause(contentKey: String) {
         guard let task = tasksByContentKey[contentKey] else { return }
-        task.cancel { [weak self] data in
+        task.cancel { [weak self] _ in
             Task { @MainActor in
-                self?.applyPause(contentKey: contentKey, resumeData: data)
+                // Resume data is deliberately unused: continuation is driven by the
+                // `.part` file's size, which survives relaunches and app termination.
+                self?.applyPause(contentKey: contentKey)
             }
         }
     }
 
     public func resume(contentKey: String) {
-        guard let modelContext else { return }
         guard let download = cachedDownload(forKey: contentKey) else { return }
-
-        let task: URLSessionDownloadTask
-        if let resumeData = download.resumeData {
-            task = session.downloadTask(withResumeData: resumeData)
-        } else if let url = URL(string: download.sourceStreamURLString) {
-            task = session.downloadTask(with: url)
-        } else {
-            return
-        }
-        task.taskDescription = contentKey
-        tasksByContentKey[contentKey] = task
-        download.resumeData = nil
-        download.state = .downloading
-        try? modelContext.save()
-        task.resume()
+        segmentAttempts[contentKey] = 0
+        download.lastError = nil
+        startSegment(for: download)
     }
 
     public func retry(contentKey: String) {
@@ -120,8 +129,11 @@ public final class DownloadManager: NSObject {
         if let fileURL = download.localFileURL {
             try? FileManager.default.removeItem(at: fileURL)
         }
+        try? FileManager.default.removeItem(at: partFileURL(for: contentKey))
         downloadsByContentKey[contentKey] = nil
         lastProgressSaveAt[contentKey] = nil
+        segmentBaseBytes[contentKey] = nil
+        segmentAttempts[contentKey] = nil
         modelContext.delete(download)
         try? modelContext.save()
     }
@@ -138,22 +150,113 @@ public final class DownloadManager: NSObject {
         return found
     }
 
-    private func startTask(for download: Download, url: URL) {
-        let task = session.downloadTask(with: url)
-        task.taskDescription = download.contentKey
-        tasksByContentKey[download.contentKey] = task
+    private func sanitizedFileStem(for contentKey: String) -> String {
+        contentKey.replacingOccurrences(of: "|", with: "_")
+    }
+
+    private func partFileURL(for contentKey: String) -> URL {
+        DownloadPaths.directory().appendingPathComponent("\(sanitizedFileStem(for: contentKey)).part")
+    }
+
+    private func bytesOnDisk(for contentKey: String) -> Int64 {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: partFileURL(for: contentKey).path)
+        return (attributes?[.size] as? Int64) ?? 0
+    }
+
+    /// Starts (or continues) a transfer, requesting only the bytes not already on disk.
+    private func startSegment(for download: Download) {
+        guard let url = URL(string: download.sourceStreamURLString) else {
+            fail(download, message: "The stream address is no longer valid.")
+            return
+        }
+
+        let contentKey = download.contentKey
+        let offset = bytesOnDisk(for: contentKey)
+
+        var request = URLRequest(url: url)
+        request.setValue(Self.playerUserAgent, forHTTPHeaderField: "User-Agent")
+        if offset > 0 {
+            request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
+        }
+
+        let task = session.downloadTask(with: request)
+        task.taskDescription = contentKey
+        tasksByContentKey[contentKey] = task
+        segmentBaseBytes[contentKey] = offset
+        download.bytesReceived = offset
         download.state = .downloading
         try? modelContext?.save()
         task.resume()
     }
 
-    private func applyPause(contentKey: String, resumeData: Data?) {
+    private func applyPause(contentKey: String) {
         tasksByContentKey[contentKey] = nil
-        guard let modelContext else { return }
-        guard let download = cachedDownload(forKey: contentKey) else { return }
-        download.resumeData = resumeData
+        guard let modelContext, let download = cachedDownload(forKey: contentKey) else { return }
+        download.bytesReceived = bytesOnDisk(for: contentKey)
         download.state = .paused
         try? modelContext.save()
+    }
+
+    private func fail(_ download: Download, message: String) {
+        tasksByContentKey[download.contentKey] = nil
+        download.state = .failed
+        download.lastError = message
+        try? modelContext?.save()
+    }
+
+    /// Appends a finished segment's temp file onto the `.part` file, returning the new
+    /// total size on disk. Must run synchronously inside the delegate callback — the
+    /// temp file is deleted the moment the callback returns.
+    private func appendSegment(at location: URL, to partURL: URL) throws -> Int64 {
+        if !FileManager.default.fileExists(atPath: partURL.path) {
+            try FileManager.default.moveItem(at: location, to: partURL)
+        } else {
+            let handle = try FileHandle(forWritingTo: partURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            // Streamed in chunks so a multi-hundred-megabyte segment never has to be
+            // resident in memory all at once.
+            let reader = try FileHandle(forReadingFrom: location)
+            defer { try? reader.close() }
+            while let chunk = try reader.read(upToCount: 1_048_576), !chunk.isEmpty {
+                try handle.write(contentsOf: chunk)
+            }
+            try? FileManager.default.removeItem(at: location)
+        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: partURL.path)
+        return (attributes[.size] as? Int64) ?? 0
+    }
+
+    private func finish(_ download: Download, partURL: URL, totalBytes: Int64) {
+        guard let modelContext else { return }
+        let contentKey = download.contentKey
+
+        guard totalBytes > Self.minimumValidFileSizeBytes else {
+            try? FileManager.default.removeItem(at: partURL)
+            fail(download, message: "The server sent only \(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)) — this stream doesn't appear to allow downloading.")
+            return
+        }
+
+        let ext = URL(string: download.sourceStreamURLString)?.pathExtension
+        let safeExt = (ext?.isEmpty == false) ? ext! : "mp4"
+        let fileName = "\(sanitizedFileStem(for: contentKey)).\(safeExt)"
+        let destination = DownloadPaths.directory().appendingPathComponent(fileName)
+
+        do {
+            if FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.moveItem(at: partURL, to: destination)
+            download.localFileURLString = fileName
+            download.bytesReceived = totalBytes
+            download.state = .completed
+            download.completedAt = .now
+            download.lastError = nil
+            tasksByContentKey[contentKey] = nil
+            try? modelContext.save()
+        } catch {
+            fail(download, message: error.localizedDescription)
+        }
     }
 
     private func hasSufficientDiskSpace() -> Bool {
@@ -167,8 +270,8 @@ public final class DownloadManager: NSObject {
     }
 
     /// Cross-references live OS-tracked tasks against persisted rows so the UI never
-    /// shows a stale "downloading" state after a relaunch. Orphaned rows (no live task,
-    /// no completed file) are marked failed; orphaned files with no row are removed.
+    /// shows a stale "downloading" state after a relaunch. Orphaned rows keep their
+    /// `.part` file, so the user can resume rather than restart from zero.
     private func reconcile(liveTasks: [URLSessionTask]) {
         guard let modelContext else { return }
 
@@ -189,8 +292,9 @@ public final class DownloadManager: NSObject {
                 if let fileURL = download.localFileURL, FileManager.default.fileExists(atPath: fileURL.path) {
                     download.state = .completed
                 } else {
-                    download.state = .failed
-                    download.lastError = "Download stopped while the app was closed."
+                    download.state = .paused
+                    download.bytesReceived = bytesOnDisk(for: download.contentKey)
+                    download.lastError = "Stopped while the app was closed — tap Resume to continue."
                 }
             case .paused, .completed, .failed, .cancelled:
                 break
@@ -202,7 +306,9 @@ public final class DownloadManager: NSObject {
     }
 
     private func cleanUpOrphanedFiles(knownDownloads: [Download]) {
-        let knownFileNames = Set(knownDownloads.compactMap(\.localFileURLString))
+        var knownFileNames = Set(knownDownloads.compactMap(\.localFileURLString))
+        // A `.part` belonging to a known row is work in progress, not an orphan.
+        knownFileNames.formUnion(knownDownloads.map { "\(sanitizedFileStem(for: $0.contentKey)).part" })
         let directory = DownloadPaths.directory()
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return }
         for file in files where !knownFileNames.contains(file) {
@@ -221,40 +327,52 @@ extension DownloadManager: URLSessionDownloadDelegate {
         didFinishDownloadingTo location: URL
     ) {
         MainActor.assumeIsolated {
-            guard let contentKey = downloadTask.taskDescription, let modelContext else { return }
+            guard let contentKey = downloadTask.taskDescription else { return }
             guard let download = cachedDownload(forKey: contentKey) else { return }
 
-            let ext = URL(string: download.sourceStreamURLString)?.pathExtension
-            let safeExt = (ext?.isEmpty == false) ? ext! : "mp4"
-            let fileName = "\(contentKey.replacingOccurrences(of: "|", with: "_")).\(safeExt)"
-            let destination = DownloadPaths.directory().appendingPathComponent(fileName)
-
-            do {
-                if FileManager.default.fileExists(atPath: destination.path) {
-                    try FileManager.default.removeItem(at: destination)
-                }
-                try FileManager.default.moveItem(at: location, to: destination)
-
-                let attributes = try FileManager.default.attributesOfItem(atPath: destination.path)
-                let fileSize = (attributes[.size] as? Int64) ?? 0
-                guard fileSize > Self.minimumValidFileSizeBytes else {
-                    try? FileManager.default.removeItem(at: destination)
-                    download.state = .failed
-                    download.lastError = "Downloaded file looked invalid (too small) — the stream may not support downloading."
-                    try? modelContext.save()
-                    return
-                }
-
-                download.localFileURLString = fileName
-                download.bytesReceived = fileSize
-                download.state = .completed
-                download.completedAt = .now
-                try? modelContext.save()
-            } catch {
-                download.state = .failed
-                download.lastError = error.localizedDescription
-                try? modelContext.save()
+            let http = downloadTask.response as? HTTPURLResponse
+            if let http, !(200...299).contains(http.statusCode) {
+                try? FileManager.default.removeItem(at: location)
+                fail(download, message: "The server refused the download (HTTP \(http.statusCode)).")
+                return
             }
+
+            let partURL = partFileURL(for: contentKey)
+            let base = segmentBaseBytes[contentKey] ?? 0
+            // 200 in reply to a `Range` request means the server ignored it and restarted
+            // from byte zero. Appending that would duplicate bytes and corrupt the file,
+            // so the partial is discarded and this segment replaces it wholesale.
+            let rangeIgnored = base > 0 && http?.statusCode == 200
+            if rangeIgnored {
+                try? FileManager.default.removeItem(at: partURL)
+            }
+
+            let totalBytes: Int64
+            do {
+                totalBytes = try appendSegment(at: location, to: partURL)
+            } catch {
+                fail(download, message: error.localizedDescription)
+                return
+            }
+
+            download.bytesReceived = totalBytes
+            tasksByContentKey[contentKey] = nil
+
+            // The panel closed the connection early — `URLSession` calls this a success,
+            // so truncation has to be detected here by comparing against Content-Length.
+            let expected = download.bytesExpected
+            guard expected > 0, totalBytes < expected else {
+                finish(download, partURL: partURL, totalBytes: totalBytes)
+                return
+            }
+
+            guard !rangeIgnored else {
+                // Retrying would just fetch the same truncated prefix forever.
+                try? FileManager.default.removeItem(at: partURL)
+                fail(download, message: "The server cuts the transfer short and doesn't support resuming, so this stream can't be downloaded.")
+                return
+            }
+            continueOrFail(download, madeProgress: totalBytes > base)
         }
     }
 
@@ -278,28 +396,38 @@ extension DownloadManager: URLSessionDownloadDelegate {
             lastProgressSaveAt[contentKey] = now
 
             guard let download = cachedDownload(forKey: contentKey) else { return }
-            download.bytesReceived = totalBytesWritten
+            // The in-flight task only knows about its own byte range, so both counters
+            // are offset by whatever was already on disk when this segment started.
+            let base = segmentBaseBytes[contentKey] ?? 0
+            download.bytesReceived = base + totalBytesWritten
             // Stays 0 when the server sends no Content-Length, which the UI renders as
             // an indeterminate bar rather than a progress bar frozen at 0%.
-            download.bytesExpected = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : 0
+            if totalBytesExpectedToWrite > 0 {
+                download.bytesExpected = base + totalBytesExpectedToWrite
+            }
             try? modelContext.save()
         }
     }
 
     public nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         MainActor.assumeIsolated {
-            guard let error, let contentKey = task.taskDescription, let modelContext else { return }
+            guard let error, let contentKey = task.taskDescription else { return }
             let nsError = error as NSError
             if nsError.code == NSURLErrorCancelled {
                 return // explicit pause/cancel already handled its own state transition
             }
             guard let download = cachedDownload(forKey: contentKey) else { return }
-            if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
-                download.resumeData = resumeData
-            }
-            download.state = .failed
-            download.lastError = error.localizedDescription
-            try? modelContext.save()
+            tasksByContentKey[contentKey] = nil
+
+            // A dropped connection mid-file is the normal case with these panels, not a
+            // dead end: whatever landed on disk is kept and the next segment resumes.
+            let onDisk = bytesOnDisk(for: contentKey)
+            download.bytesReceived = onDisk
+            continueOrFail(
+                download,
+                madeProgress: onDisk > (segmentBaseBytes[contentKey] ?? 0),
+                underlyingError: error.localizedDescription
+            )
         }
     }
 
@@ -308,5 +436,32 @@ extension DownloadManager: URLSessionDownloadDelegate {
             backgroundCompletionHandler?()
             backgroundCompletionHandler = nil
         }
+    }
+}
+
+private extension DownloadManager {
+    /// Requests the next byte range, unless the server has stopped making progress or
+    /// the attempt budget is spent — in which case this fails loudly rather than
+    /// spinning forever or leaving a truncated file looking "downloaded".
+    func continueOrFail(
+        _ download: Download,
+        madeProgress: Bool,
+        underlyingError: String? = nil
+    ) {
+        let contentKey = download.contentKey
+        let attempts = (segmentAttempts[contentKey] ?? 0) + 1
+        segmentAttempts[contentKey] = attempts
+
+        guard madeProgress else {
+            try? FileManager.default.removeItem(at: partFileURL(for: contentKey))
+            fail(download, message: underlyingError
+                ?? "The server stopped sending data and doesn't support resuming — this stream can't be downloaded.")
+            return
+        }
+        guard attempts < Self.maximumSegmentAttempts else {
+            fail(download, message: "Gave up after \(attempts) reconnects — the server keeps interrupting the transfer.")
+            return
+        }
+        startSegment(for: download)
     }
 }

@@ -77,6 +77,8 @@ struct MovieDetailView: View {
                 if download?.state == .downloading {
                     ProgressView(value: downloadProgress)
                 }
+
+                LibraryControlsView(contentKey: contentKey, kind: .movie, title: movie.title, posterURL: movie.posterURL)
                 if let error = download?.lastError, download?.state == .failed {
                     Text(error).font(.caption).foregroundStyle(.red)
                 }

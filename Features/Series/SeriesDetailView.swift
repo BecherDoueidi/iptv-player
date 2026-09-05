@@ -46,6 +46,13 @@ struct SeriesDetailView: View {
                     Text(plot)
                 }
 
+                LibraryControlsView(
+                    contentKey: ContentKey.make(sourceID: account.sourceID, kind: .series, providerID: series.id),
+                    kind: .series,
+                    title: series.title,
+                    posterURL: series.posterURL
+                )
+
                 Divider()
 
                 if viewModel.isLoading && viewModel.seasons.isEmpty {

@@ -18,7 +18,8 @@ final class AppDependencies {
         // pass in, and Movie/TVSeries/WatchProgress/Download aren't related to it.
         let schemaTypes: [any PersistentModel.Type] = [
             ProviderAccount.self, Movie.self, TVSeries.self, TVSeason.self,
-            TVEpisode.self, WatchProgress.self, Download.self
+            TVEpisode.self, WatchProgress.self, Download.self, Favorite.self,
+            Rating.self, MediaCollection.self
         ]
         if let container = try? ModelContainer(for: Schema(schemaTypes)) {
             modelContainer = container

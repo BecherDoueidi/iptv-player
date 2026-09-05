@@ -17,6 +17,7 @@ final class VLCPlaybackController {
     private var pendingResumeSeconds: TimeInterval = 0
     private var hasAppliedResume = false
     private var hasReportedFinish = false
+    private var hasStartedPlayback = false
     private var lastProgressReportAt = Date.distantPast
 
     private(set) var positionSeconds: Double = 0
@@ -109,23 +110,30 @@ final class VLCPlaybackController {
         }
         isPlaying = player.isPlaying
 
-        switch player.state {
-        case .error:
+        // VLCKit's `state` is unreliable for this — it frequently sits at `.buffering`
+        // through normal playback (observed on-device: video playing fine behind a
+        // spinner that never went away). Actual progress is the trustworthy signal.
+        if player.isPlaying, currentMs > 0 {
+            hasStartedPlayback = true
+        }
+        isBuffering = !hasStartedPlayback
+
+        if player.state == .error {
             errorMessage = "VLC couldn't open this stream."
             pollTimer?.invalidate()
             pollTimer = nil
             return
-        case .ended:
+        }
+
+        // `.ended` plus a position-based fallback, since `state` can't be fully trusted.
+        let reachedEnd = durationSeconds > 0 && positionSeconds >= durationSeconds - 1
+        if player.state == .ended || (hasStartedPlayback && reachedEnd) {
             guard !hasReportedFinish else { return }
             hasReportedFinish = true
             isBuffering = false
-            if durationSeconds > 0 {
-                onProgress?(durationSeconds, durationSeconds)
-            }
+            onProgress?(durationSeconds, durationSeconds)
             onFinished?()
             return
-        default:
-            isBuffering = (player.state == .buffering || player.state == .opening)
         }
 
         if !hasAppliedResume, pendingResumeSeconds > 0, durationSeconds > 0, player.isPlaying {

@@ -215,6 +215,9 @@ struct PlayerScreen: View {
         hideControlsTask = Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled else { return }
+            // Only hide while actually playing — leaving the close button on screen
+            // when paused or stalled means there's always a way out.
+            guard controller.isPlaying else { return }
             withAnimation(.easeInOut(duration: 0.2)) { controlsVisible = false }
         }
     }

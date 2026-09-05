@@ -23,8 +23,6 @@ targets:
         excludes:
           - "Resources/Info.plist"
       - path: Features
-    info:
-      path: App/Resources/Info.plist
     entitlements:
       path: App/Resources/IPTVPlayer.entitlements
     settings:
@@ -32,6 +30,13 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.personal.iptvplayer
         PRODUCT_NAME: IPTVPlayer
         SWIFT_VERSION: "5.0"
+        # Xcode's modern build system auto-generates Info.plist from build settings
+        # by default, silently ignoring a physical file even when XcodeGen's `info:`
+        # key points at one (confirmed in CI: our custom keys — including the ATS
+        # exception — never made it into any built .app). Force it to actually use
+        # our hand-written file instead.
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: App/Resources/Info.plist
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_BITCODE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

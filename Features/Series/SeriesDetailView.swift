@@ -48,13 +48,17 @@ struct SeriesDetailView: View {
 
                 Divider()
 
-                if viewModel.isLoading {
+                if viewModel.isLoading && viewModel.seasons.isEmpty {
                     ProgressView()
-                } else if let errorMessage = viewModel.errorMessage {
-                    Text(errorMessage).foregroundStyle(.red)
                 } else if viewModel.seasons.isEmpty {
-                    Text("No episodes available yet.").foregroundStyle(.secondary)
+                    if let errorMessage = viewModel.errorMessage {
+                        Text(errorMessage).foregroundStyle(.red)
+                    } else {
+                        Text("No episodes available yet.").foregroundStyle(.secondary)
+                    }
                 } else {
+                    // Cached episodes still show even if the network refresh above
+                    // failed (offline, or the panel is temporarily unreachable).
                     seasonPicker
                     episodeList
                 }
@@ -77,6 +81,15 @@ struct SeriesDetailView: View {
     }
 
     private func play(_ episode: SeriesEpisode) {
+        currentlyPlayingEpisode = episode
+        let key = contentKey(for: episode)
+
+        // Prefer the downloaded copy when available — faster, and works offline.
+        if let existing = download(for: episode), existing.state == .completed, let localURL = existing.localFileURL {
+            playbackRequest = PlaybackRequest(url: localURL, title: episode.title, contentKey: key)
+            return
+        }
+
         guard let credentials,
               let url = dependencies.mediaProvider.episodeStreamURL(
                 credentials: credentials,
@@ -84,8 +97,7 @@ struct SeriesDetailView: View {
                 containerExtension: episode.containerExtension
               )
         else { return }
-        currentlyPlayingEpisode = episode
-        playbackRequest = PlaybackRequest(url: url, title: episode.title, contentKey: contentKey(for: episode))
+        playbackRequest = PlaybackRequest(url: url, title: episode.title, contentKey: key)
     }
 
     /// Next episode in the same season, or the first episode of the next season.
@@ -169,7 +181,7 @@ struct SeriesDetailView: View {
                         }
                     }
                     .buttonStyle(.plain)
-                    .disabled(credentials == nil)
+                    .disabled(credentials == nil && download(for: episode)?.state != .completed)
 
                     Spacer()
 

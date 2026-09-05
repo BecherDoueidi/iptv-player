@@ -65,7 +65,7 @@ struct MovieDetailView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(credentials == nil)
+                .disabled(credentials == nil && download?.state != .completed)
 
                 Button(action: downloadAction) {
                     Label(downloadButtonTitle, systemImage: "arrow.down.circle")
@@ -149,6 +149,11 @@ struct MovieDetailView: View {
     }
 
     private func play() {
+        // Prefer the downloaded copy when available — faster, and works offline.
+        if let download, download.state == .completed, let localURL = download.localFileURL {
+            playbackRequest = PlaybackRequest(url: localURL, title: movie.title, contentKey: contentKey)
+            return
+        }
         guard let credentials,
               let url = dependencies.mediaProvider.movieStreamURL(
                 credentials: credentials,

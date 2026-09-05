@@ -7,6 +7,7 @@ struct DownloadsListView: View {
 
     @Query(sort: \Download.createdAt, order: .reverse) private var downloads: [Download]
     @Environment(\.modelContext) private var modelContext
+    @State private var playbackRequest: PlaybackRequest?
 
     var body: some View {
         NavigationStack {
@@ -20,12 +21,19 @@ struct DownloadsListView: View {
                 } else {
                     List {
                         ForEach(downloads) { download in
-                            DownloadRow(download: download, dependencies: dependencies)
+                            DownloadRow(
+                                download: download,
+                                dependencies: dependencies,
+                                onPlay: { playbackRequest = $0 }
+                            )
                         }
                     }
                 }
             }
             .navigationTitle("Downloads")
+            .fullScreenCover(item: $playbackRequest) { request in
+                PlayerScreen(request: request)
+            }
         }
     }
 }
@@ -33,10 +41,26 @@ struct DownloadsListView: View {
 private struct DownloadRow: View {
     let download: Download
     let dependencies: AppDependencies
+    let onPlay: (PlaybackRequest) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(download.title).font(.headline)
+            Group {
+                if download.state == .completed {
+                    Button {
+                        play()
+                    } label: {
+                        HStack {
+                            Text(download.title).font(.headline)
+                            Spacer()
+                            Image(systemName: "play.circle").foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Text(download.title).font(.headline)
+                }
+            }
 
             switch download.state {
             case .downloading:
@@ -88,6 +112,11 @@ private struct DownloadRow: View {
             .controlSize(.small)
         }
         .padding(.vertical, 4)
+    }
+
+    private func play() {
+        guard let localURL = download.localFileURL else { return }
+        onPlay(PlaybackRequest(url: localURL, title: download.title, contentKey: download.contentKey))
     }
 
     private var progressFraction: Double {

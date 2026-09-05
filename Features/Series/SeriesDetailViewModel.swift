@@ -23,7 +23,36 @@ final class SeriesDetailViewModel {
     @MainActor
     func loadIfNeeded(modelContext: ModelContext) async {
         guard seasons.isEmpty, !isLoading else { return }
+        loadFromCache(modelContext: modelContext)
         await load(modelContext: modelContext)
+    }
+
+    /// Populates from the persisted Series → Season → Episode tree first so
+    /// previously-viewed episodes are browsable offline (or while the network
+    /// refresh below is in flight / fails).
+    private func loadFromCache(modelContext: ModelContext) {
+        let seriesKey = ContentKey.make(sourceID: account.sourceID, kind: .series, providerID: series.id)
+        let descriptor = FetchDescriptor<TVSeries>(predicate: #Predicate { $0.contentKey == seriesKey })
+        guard let record = try? modelContext.fetch(descriptor).first, !record.seasons.isEmpty else { return }
+
+        seasons = record.seasons.map { season in
+            SeriesSeason(
+                seasonNumber: season.seasonNumber,
+                episodes: season.episodes.map { episode in
+                    SeriesEpisode(
+                        id: episode.providerID,
+                        seasonNumber: season.seasonNumber,
+                        episodeNumber: episode.episodeNumber,
+                        title: episode.title,
+                        containerExtension: episode.containerExtension
+                    )
+                }.sorted { $0.episodeNumber < $1.episodeNumber }
+            )
+        }.sorted { $0.seasonNumber < $1.seasonNumber }
+
+        if selectedSeasonNumber == nil {
+            selectedSeasonNumber = seasons.first?.seasonNumber
+        }
     }
 
     @MainActor

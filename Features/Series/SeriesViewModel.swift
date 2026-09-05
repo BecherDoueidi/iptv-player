@@ -34,7 +34,29 @@ final class SeriesViewModel {
     @MainActor
     func loadIfNeeded(modelContext: ModelContext) async {
         guard seriesList.isEmpty, !isLoading else { return }
+        loadFromCache(modelContext: modelContext)
         await refresh(modelContext: modelContext)
+    }
+
+    /// Populates from persisted data first so the catalog is browsable offline (or
+    /// while the network refresh below is still in flight / fails).
+    private func loadFromCache(modelContext: ModelContext) {
+        guard let cached = try? modelContext.fetch(FetchDescriptor<TVSeries>()) else { return }
+        let prefix = "\(account.sourceID)|series|"
+        let relevant = cached.filter { $0.contentKey.hasPrefix(prefix) }
+        guard !relevant.isEmpty else { return }
+        seriesList = relevant.map { series in
+            SeriesSummary(
+                id: series.providerID,
+                categoryID: series.categoryID,
+                title: series.title,
+                posterURL: series.posterURL,
+                backdropURL: series.backdropURL,
+                plot: series.plot,
+                genre: series.genre,
+                rating: series.rating
+            )
+        }
     }
 
     @MainActor

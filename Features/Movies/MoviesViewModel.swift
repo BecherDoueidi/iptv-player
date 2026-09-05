@@ -35,7 +35,31 @@ final class MoviesViewModel {
     @MainActor
     func loadIfNeeded(modelContext: ModelContext) async {
         guard movies.isEmpty, !isLoading else { return }
+        loadFromCache(modelContext: modelContext)
         await refresh(modelContext: modelContext)
+    }
+
+    /// Populates from persisted data first so the catalog is browsable offline (or
+    /// while the network refresh below is still in flight / fails). Category filter
+    /// chips aren't cached (categories are never persisted, only movies are), so
+    /// they won't appear until a successful network refresh — an acceptable
+    /// offline-mode trade-off, not a bug.
+    private func loadFromCache(modelContext: ModelContext) {
+        guard let cached = try? modelContext.fetch(FetchDescriptor<Movie>()) else { return }
+        let prefix = "\(account.sourceID)|movie|"
+        let relevant = cached.filter { $0.contentKey.hasPrefix(prefix) }
+        guard !relevant.isEmpty else { return }
+        movies = relevant.map { movie in
+            MovieSummary(
+                id: movie.providerID,
+                categoryID: movie.categoryID,
+                title: movie.title,
+                posterURL: movie.posterURL,
+                containerExtension: movie.containerExtension,
+                rating: movie.rating,
+                addedAt: movie.addedAt
+            )
+        }
     }
 
     @MainActor

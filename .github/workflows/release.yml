@@ -74,21 +74,27 @@ jobs:
           mkdir -p ipa_root/Payload
           cp -R "$APP_PATH" ipa_root/Payload/
           cd ipa_root
-          zip -r -y ../IPTVPlayer-unsigned.ipa Payload
+          # Bake the short commit SHA into the filename itself (not just the GitHub
+          # artifact name) so it's unambiguous which build you're sideloading —
+          # Sideloadly/Finder/Downloads all show this name, not the Actions run.
+          SHORT_SHA=$(git -C .. rev-parse --short HEAD)
+          IPA_NAME="IPTVPlayer-unsigned-${SHORT_SHA}.ipa"
+          zip -r -y "../${IPA_NAME}" Payload
           cd ..
+          echo "IPA_NAME=${IPA_NAME}" >> "$GITHUB_ENV"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: IPTVPlayer-unsigned-ipa
-          path: IPTVPlayer-unsigned.ipa
+          path: ${{ env.IPA_NAME }}
           retention-days: 30
 
       - name: Attach IPA to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: IPTVPlayer-unsigned.ipa
+          files: ${{ env.IPA_NAME }}
           body: |
             Unsigned IPA — install by sideloading with Sideloadly, AltStore, or
             SideStore. Whichever tool you use will sign this on-device with your

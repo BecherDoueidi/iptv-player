@@ -15,7 +15,33 @@ actor XtreamAPIClient {
     }
 
     func fetchAuthResponse(credentials: XtreamCredentials) async throws -> XtreamAuthResponseDTO {
-        let url = try Self.playerAPIURL(credentials: credentials)
+        try await fetch(credentials: credentials, extraQueryItems: [])
+    }
+
+    func fetchMovieCategories(credentials: XtreamCredentials) async throws -> [XtreamCategoryDTO] {
+        try await fetch(
+            credentials: credentials,
+            extraQueryItems: [URLQueryItem(name: "action", value: "get_vod_categories")]
+        )
+    }
+
+    func fetchMovies(credentials: XtreamCredentials, categoryID: String?) async throws -> [XtreamVodStreamDTO] {
+        var items = [URLQueryItem(name: "action", value: "get_vod_streams")]
+        if let categoryID {
+            items.append(URLQueryItem(name: "category_id", value: categoryID))
+        }
+        return try await fetch(credentials: credentials, extraQueryItems: items)
+    }
+
+    func fetchMovieDetail(credentials: XtreamCredentials, movieID: String) async throws -> XtreamVodInfoResponseDTO {
+        try await fetch(credentials: credentials, extraQueryItems: [
+            URLQueryItem(name: "action", value: "get_vod_info"),
+            URLQueryItem(name: "vod_id", value: movieID)
+        ])
+    }
+
+    private func fetch<T: Decodable>(credentials: XtreamCredentials, extraQueryItems: [URLQueryItem]) async throws -> T {
+        let url = try Self.playerAPIURL(credentials: credentials, extraQueryItems: extraQueryItems)
 
         let data: Data
         let response: URLResponse
@@ -33,14 +59,15 @@ actor XtreamAPIClient {
         }
 
         do {
-            return try JSONDecoder().decode(XtreamAuthResponseDTO.self, from: data)
+            return try JSONDecoder().decode(T.self, from: data)
         } catch {
             throw XtreamAPIError.unexpectedResponse
         }
     }
 
-    /// `player_api.php` with no `action` query item is the standard Xtream auth-check call.
-    static func playerAPIURL(credentials: XtreamCredentials) throws -> URL {
+    /// `player_api.php` with no `action` query item is the standard Xtream auth-check call;
+    /// other endpoints add an `action` (and sometimes further) query items on top of it.
+    static func playerAPIURL(credentials: XtreamCredentials, extraQueryItems: [URLQueryItem] = []) throws -> URL {
         guard var components = URLComponents(url: credentials.serverURL, resolvingAgainstBaseURL: false) else {
             throw XtreamAPIError.invalidServerURL
         }
@@ -48,7 +75,7 @@ actor XtreamAPIClient {
         components.queryItems = [
             URLQueryItem(name: "username", value: credentials.username),
             URLQueryItem(name: "password", value: credentials.password)
-        ]
+        ] + extraQueryItems
         guard let url = components.url else {
             throw XtreamAPIError.invalidServerURL
         }

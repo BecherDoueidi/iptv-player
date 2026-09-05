@@ -35,41 +35,11 @@ struct XtreamUserInfoDTO: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         username = try? container.decode(String.self, forKey: .username)
         message = try? container.decode(String.self, forKey: .message)
-        auth = Self.decodeLenientInt(container, .auth)
+        auth = XtreamLenientDecoding.int(container, .auth)
         status = try? container.decode(String.self, forKey: .status)
-        expDateRaw = Self.decodeLenientString(container, .expDateRaw)
-        isTrial = Self.decodeLenientBool(container, .isTrial)
-        activeConnections = Self.decodeLenientInt(container, .activeConnections)
-        maxConnections = Self.decodeLenientInt(container, .maxConnections)
-    }
-
-    private static func decodeLenientInt(
-        _ container: KeyedDecodingContainer<CodingKeys>,
-        _ key: CodingKeys
-    ) -> Int? {
-        if let value = try? container.decode(Int.self, forKey: key) { return value }
-        if let text = try? container.decode(String.self, forKey: key) { return Int(text) }
-        return nil
-    }
-
-    private static func decodeLenientString(
-        _ container: KeyedDecodingContainer<CodingKeys>,
-        _ key: CodingKeys
-    ) -> String? {
-        if let value = try? container.decode(String.self, forKey: key) { return value }
-        if let value = try? container.decode(Int.self, forKey: key) { return String(value) }
-        return nil
-    }
-
-    private static func decodeLenientBool(
-        _ container: KeyedDecodingContainer<CodingKeys>,
-        _ key: CodingKeys
-    ) -> Bool? {
-        if let value = try? container.decode(Bool.self, forKey: key) { return value }
-        if let value = try? container.decode(Int.self, forKey: key) { return value != 0 }
-        if let value = try? container.decode(String.self, forKey: key) {
-            return value == "1" || value.lowercased() == "true"
-        }
-        return nil
+        expDateRaw = XtreamLenientDecoding.string(container, .expDateRaw)
+        isTrial = XtreamLenientDecoding.bool(container, .isTrial)
+        activeConnections = XtreamLenientDecoding.int(container, .activeConnections)
+        maxConnections = XtreamLenientDecoding.int(container, .maxConnections)
     }
 }

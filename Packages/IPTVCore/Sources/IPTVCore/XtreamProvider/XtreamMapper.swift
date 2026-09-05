@@ -20,4 +20,39 @@ enum XtreamMapper {
             message: userInfo.message
         )
     }
+
+    static func makeCategories(from dtos: [XtreamCategoryDTO]) -> [Category] {
+        dtos.compactMap { dto in
+            guard let id = dto.categoryID, let name = dto.categoryName else { return nil }
+            return Category(id: id, name: name)
+        }
+    }
+
+    static func makeMovieSummaries(from dtos: [XtreamVodStreamDTO]) -> [MovieSummary] {
+        dtos.compactMap { dto in
+            guard let id = dto.streamID, let title = dto.name else { return nil }
+            return MovieSummary(
+                id: id,
+                categoryID: dto.categoryID,
+                title: title,
+                posterURL: dto.streamIcon.flatMap(URL.init(string:)),
+                containerExtension: dto.containerExtension,
+                rating: dto.rating,
+                addedAt: dto.added.flatMap(TimeInterval.init).map { Date(timeIntervalSince1970: $0) }
+            )
+        }
+    }
+
+    static func makeMovieDetail(id: String, from response: XtreamVodInfoResponseDTO) -> MovieDetail {
+        let info = response.info
+        return MovieDetail(
+            id: id,
+            plot: info?.plot,
+            genre: info?.genre,
+            releaseDate: info?.releaseDate,
+            durationSeconds: info?.durationSecs,
+            backdropURL: info?.backdropPath?.first.flatMap(URL.init(string:)),
+            rating: info?.rating
+        )
+    }
 }

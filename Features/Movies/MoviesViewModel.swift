@@ -117,13 +117,18 @@ final class MoviesViewModel {
         }.prefix(10))
     }
 
+    /// One bulk fetch + in-memory dictionary lookup, not a query per movie — a
+    /// per-item FetchDescriptor here froze the app on any catalog of real-world
+    /// size (Xtream panels commonly list thousands of VOD entries), since this
+    /// runs synchronously on the main actor.
     private func persist(_ summaries: [MovieSummary], modelContext: ModelContext) {
+        let existingMovies = (try? modelContext.fetch(FetchDescriptor<Movie>())) ?? []
+        var moviesByKey = Dictionary(uniqueKeysWithValues: existingMovies.map { ($0.contentKey, $0) })
+
         for summary in summaries {
             let key = ContentKey.make(sourceID: account.sourceID, kind: .movie, providerID: summary.id)
-            let descriptor = FetchDescriptor<Movie>(predicate: #Predicate { $0.contentKey == key })
-            let existing = try? modelContext.fetch(descriptor).first
 
-            if let existing {
+            if let existing = moviesByKey[key] {
                 existing.title = summary.title
                 existing.posterURLString = summary.posterURL?.absoluteString
                 existing.categoryID = summary.categoryID
@@ -132,7 +137,7 @@ final class MoviesViewModel {
                 existing.addedAt = summary.addedAt
                 existing.lastSyncedAt = .now
             } else {
-                modelContext.insert(Movie(
+                let movie = Movie(
                     contentKey: key,
                     providerID: summary.id,
                     title: summary.title,
@@ -141,7 +146,9 @@ final class MoviesViewModel {
                     containerExtension: summary.containerExtension,
                     categoryID: summary.categoryID,
                     addedAt: summary.addedAt
-                ))
+                )
+                modelContext.insert(movie)
+                moviesByKey[key] = movie
             }
         }
         try? modelContext.save()

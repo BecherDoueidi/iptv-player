@@ -83,13 +83,16 @@ final class SeriesViewModel {
         }
     }
 
+    /// One bulk fetch + in-memory dictionary lookup, not a query per series — see
+    /// MoviesViewModel.persist for why (froze the app on any real-world catalog size).
     private func persist(_ summaries: [SeriesSummary], modelContext: ModelContext) {
+        let existingSeries = (try? modelContext.fetch(FetchDescriptor<TVSeries>())) ?? []
+        var seriesByKey = Dictionary(uniqueKeysWithValues: existingSeries.map { ($0.contentKey, $0) })
+
         for summary in summaries {
             let key = ContentKey.make(sourceID: account.sourceID, kind: .series, providerID: summary.id)
-            let descriptor = FetchDescriptor<TVSeries>(predicate: #Predicate { $0.contentKey == key })
-            let existing = try? modelContext.fetch(descriptor).first
 
-            if let existing {
+            if let existing = seriesByKey[key] {
                 existing.title = summary.title
                 existing.posterURLString = summary.posterURL?.absoluteString
                 existing.backdropURLString = summary.backdropURL?.absoluteString
@@ -99,7 +102,7 @@ final class SeriesViewModel {
                 existing.categoryID = summary.categoryID
                 existing.lastSyncedAt = .now
             } else {
-                modelContext.insert(TVSeries(
+                let series = TVSeries(
                     contentKey: key,
                     providerID: summary.id,
                     title: summary.title,
@@ -109,7 +112,9 @@ final class SeriesViewModel {
                     genre: summary.genre,
                     rating: summary.rating,
                     categoryID: summary.categoryID
-                ))
+                )
+                modelContext.insert(series)
+                seriesByKey[key] = series
             }
         }
         try? modelContext.save()

@@ -12,6 +12,11 @@ configs:
 packages:
   IPTVCore:
     path: Packages/IPTVCore
+  # AVFoundation cannot open .mkv/.avi/raw .ts — most of a typical Xtream catalog.
+  # VLC is what every real IPTV player embeds for this reason.
+  VLCKitSPM:
+    url: https://github.com/tylerjonesio/vlckit-spm
+    from: 3.5.1
 
 targets:
   IPTVPlayer:
@@ -51,6 +56,8 @@ targets:
     dependencies:
       - package: IPTVCore
         product: IPTVCore
+      - package: VLCKitSPM
+        product: VLCKitSPM
 
 schemes:
   IPTVPlayer:

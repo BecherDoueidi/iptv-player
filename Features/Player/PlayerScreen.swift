@@ -11,25 +11,62 @@ struct PlayerScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @AppStorage("autoplayNextEpisode") private var autoplayNextEpisode = false
+
+    @State private var controller = VLCPlaybackController()
+    @State private var controlsVisible = true
+    @State private var hideControlsTask: Task<Void, Never>?
     @State private var showNextEpisodePrompt = false
-    @State private var playbackErrorMessage: String?
-    @State private var closeButtonVisible = true
-    @State private var hideCloseButtonTask: Task<Void, Never>?
+    @State private var isScrubbing = false
+    @State private var scrubSeconds: Double = 0
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
+        ZStack {
             Color.black.ignoresSafeArea()
+            VLCVideoSurface(controller: controller).ignoresSafeArea()
 
-            PlayerViewControllerRepresentable(
-                url: request.url,
-                initialPosition: resumePosition(),
-                onProgress: saveProgress,
-                onFinished: handleFinished,
-                onError: { playbackErrorMessage = $0 }
-            )
-            .ignoresSafeArea()
+            if controller.isBuffering && controller.errorMessage == nil {
+                ProgressView()
+                    .tint(.white)
+                    .scaleEffect(1.4)
+            }
 
-            if closeButtonVisible {
+            if controlsVisible && controller.errorMessage == nil {
+                controlsOverlay.transition(.opacity)
+            }
+
+            if let error = controller.errorMessage {
+                errorOverlay(error)
+            }
+
+            if showNextEpisodePrompt, let onRequestNextEpisode {
+                nextEpisodeOverlay(onRequestNextEpisode)
+            }
+        }
+        .statusBarHidden()
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.2)) { controlsVisible.toggle() }
+            scheduleAutoHide()
+        }
+        .task {
+            controller.onProgress = { position, duration in
+                saveProgress(position: position, duration: duration)
+            }
+            controller.onFinished = { handleFinished() }
+            controller.start(url: request.url, resumeAt: resumePosition())
+            scheduleAutoHide()
+        }
+        .onDisappear {
+            hideControlsTask?.cancel()
+            controller.stop()
+        }
+    }
+
+    // MARK: - Controls
+
+    private var controlsOverlay: some View {
+        VStack {
+            HStack {
                 Button {
                     dismiss()
                 } label: {
@@ -37,86 +74,164 @@ struct PlayerScreen: View {
                         .font(.title)
                         .symbolRenderingMode(.palette)
                         .foregroundStyle(.white, .black.opacity(0.6))
-                        .padding()
                 }
-                .transition(.opacity)
-            }
 
-            if let playbackErrorMessage {
-                VStack(spacing: 12) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.largeTitle)
-                        .foregroundStyle(.yellow)
-                    Text("Unable to play this stream")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                    Text(playbackErrorMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.white.opacity(0.85))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    Text(redactedURLDescription)
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.5))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    Button("Close") { dismiss() }
-                        .buttonStyle(.borderedProminent)
+                Spacer()
+
+                Text(request.title)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                Spacer()
+
+                // Keeps the title visually centered against the close button.
+                Color.clear.frame(width: 28, height: 28)
+            }
+            .padding()
+
+            Spacer()
+
+            HStack(spacing: 44) {
+                Button {
+                    controller.skip(by: -10)
+                    scheduleAutoHide()
+                } label: {
+                    Image(systemName: "gobackward.10").font(.system(size: 32))
                 }
-                .padding(24)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
-                .padding(32)
-            }
 
-            if showNextEpisodePrompt, let onRequestNextEpisode {
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        Button {
-                            onRequestNextEpisode()
-                            showNextEpisodePrompt = false
-                        } label: {
-                            Label("Next Episode", systemImage: "forward.end.fill")
-                                .padding()
-                                .background(.ultraThinMaterial, in: Capsule())
+                Button {
+                    controller.togglePlayPause()
+                    scheduleAutoHide()
+                } label: {
+                    Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 44))
+                }
+
+                Button {
+                    controller.skip(by: 10)
+                    scheduleAutoHide()
+                } label: {
+                    Image(systemName: "goforward.10").font(.system(size: 32))
+                }
+            }
+            .foregroundStyle(.white)
+
+            Spacer()
+
+            VStack(spacing: 2) {
+                Slider(
+                    value: Binding(
+                        get: { isScrubbing ? scrubSeconds : controller.positionSeconds },
+                        set: { scrubSeconds = $0 }
+                    ),
+                    in: 0...max(controller.durationSeconds, 1),
+                    onEditingChanged: { editing in
+                        if editing {
+                            isScrubbing = true
+                            controller.isScrubbingExternally = true
+                            scrubSeconds = controller.positionSeconds
+                        } else {
+                            controller.seek(to: scrubSeconds)
+                            isScrubbing = false
+                            controller.isScrubbingExternally = false
                         }
-                        .padding()
+                        scheduleAutoHide()
                     }
+                )
+                .tint(.white)
+
+                HStack {
+                    Text(timeLabel(isScrubbing ? scrubSeconds : controller.positionSeconds))
+                    Spacer()
+                    Text(timeLabel(controller.durationSeconds))
                 }
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.8))
             }
+            .padding(.horizontal)
+            .padding(.bottom, 8)
         }
-        // `.simultaneousGesture` (not `.onTapGesture`) so this doesn't steal the tap
-        // from AVPlayerViewController's own tap-to-reveal-controls gesture underneath —
-        // both fire together.
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    closeButtonVisible.toggle()
-                }
-                scheduleAutoHideCloseButton()
-            }
+        .background(
+            LinearGradient(
+                colors: [.black.opacity(0.55), .clear, .black.opacity(0.55)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
         )
-        .onAppear {
-            scheduleAutoHideCloseButton()
+    }
+
+    private func errorOverlay(_ message: String) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.largeTitle)
+                .foregroundStyle(.yellow)
+            Text("Unable to play this stream")
+                .font(.headline)
+                .foregroundStyle(.white)
+            Text(message)
+                .font(.footnote)
+                .foregroundStyle(.white.opacity(0.85))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+            Text(redactedURLDescription)
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.5))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+            Button("Close") { dismiss() }
+                .buttonStyle(.borderedProminent)
+        }
+        .padding(24)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(32)
+    }
+
+    private func nextEpisodeOverlay(_ playNext: @escaping () -> Void) -> some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                Button {
+                    playNext()
+                    showNextEpisodePrompt = false
+                } label: {
+                    Label("Next Episode", systemImage: "forward.end.fill")
+                        .padding()
+                        .background(.ultraThinMaterial, in: Capsule())
+                }
+                .padding()
+            }
         }
     }
 
-    private func scheduleAutoHideCloseButton() {
-        hideCloseButtonTask?.cancel()
-        guard closeButtonVisible else { return }
-        hideCloseButtonTask = Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
+    // MARK: - Helpers
+
+    private func scheduleAutoHide() {
+        hideControlsTask?.cancel()
+        guard controlsVisible else { return }
+        hideControlsTask = Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled else { return }
-            withAnimation(.easeInOut(duration: 0.2)) {
-                closeButtonVisible = false
-            }
+            withAnimation(.easeInOut(duration: 0.2)) { controlsVisible = false }
         }
+    }
+
+    private func timeLabel(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        let total = Int(seconds)
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        return hours > 0
+            ? String(format: "%d:%02d:%02d", hours, minutes, secs)
+            : String(format: "%d:%02d", minutes, secs)
     }
 
     /// Host + path with the username/password path segments blanked out — shown in
-    /// the error overlay so a "cannot open" failure is actually diagnosable instead
-    /// of a dead end.
+    /// the error overlay so a failure is diagnosable instead of a dead end.
     private var redactedURLDescription: String {
         guard var components = URLComponents(url: request.url, resolvingAgainstBaseURL: false) else {
             return request.url.absoluteString

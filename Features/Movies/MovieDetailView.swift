@@ -8,6 +8,8 @@ struct MovieDetailView: View {
     let dependencies: AppDependencies
 
     @Environment(\.modelContext) private var modelContext
+    @Query private var downloadRows: [Download]
+
     @State private var detail: MovieDetail?
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -15,9 +17,19 @@ struct MovieDetailView: View {
     @State private var playbackRequest: PlaybackRequest?
     @State private var resumePositionSeconds: TimeInterval?
 
+    init(movie: MovieSummary, account: ProviderAccount, dependencies: AppDependencies) {
+        self.movie = movie
+        self.account = account
+        self.dependencies = dependencies
+        let key = ContentKey.make(sourceID: account.sourceID, kind: .movie, providerID: movie.id)
+        _downloadRows = Query(filter: #Predicate<Download> { $0.contentKey == key })
+    }
+
     private var contentKey: String {
         ContentKey.make(sourceID: account.sourceID, kind: .movie, providerID: movie.id)
     }
+
+    private var download: Download? { downloadRows.first }
 
     var body: some View {
         ScrollView {
@@ -55,6 +67,20 @@ struct MovieDetailView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(credentials == nil)
 
+                Button(action: downloadAction) {
+                    Label(downloadButtonTitle, systemImage: "arrow.down.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(credentials == nil || download?.state == .completed || download?.state == .downloading)
+
+                if download?.state == .downloading {
+                    ProgressView(value: downloadProgress)
+                }
+                if let error = download?.lastError, download?.state == .failed {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
+
                 if isLoading {
                     ProgressView()
                 } else if let errorMessage {
@@ -82,6 +108,22 @@ struct MovieDetailView: View {
         let minutes = Int(resumePositionSeconds) / 60
         let seconds = Int(resumePositionSeconds) % 60
         return String(format: "Resume at %d:%02d", minutes, seconds)
+    }
+
+    private var downloadButtonTitle: String {
+        switch download?.state {
+        case .completed: return "Downloaded"
+        case .downloading: return "Downloading \(Int(downloadProgress * 100))%"
+        case .queued: return "Queued"
+        case .paused: return "Paused — Resume"
+        case .failed: return "Retry Download"
+        case .cancelled, .none: return "Download"
+        }
+    }
+
+    private var downloadProgress: Double {
+        guard let download, download.bytesExpected > 0 else { return 0 }
+        return Double(download.bytesReceived) / Double(download.bytesExpected)
     }
 
     private func loadResumePosition() {
@@ -115,5 +157,19 @@ struct MovieDetailView: View {
               )
         else { return }
         playbackRequest = PlaybackRequest(url: url, title: movie.title, contentKey: contentKey)
+    }
+
+    private func downloadAction() {
+        guard let credentials else { return }
+        if let download, download.state == .failed || download.state == .paused {
+            dependencies.downloadManager.resume(contentKey: download.contentKey)
+            return
+        }
+        guard let url = dependencies.mediaProvider.movieStreamURL(
+            credentials: credentials,
+            movieID: movie.id,
+            containerExtension: movie.containerExtension
+        ) else { return }
+        try? dependencies.downloadManager.enqueue(contentKey: contentKey, kind: .movie, title: movie.title, sourceURL: url)
     }
 }

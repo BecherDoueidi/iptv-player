@@ -7,21 +7,34 @@ final class AppDependencies {
     let credentialStore: CredentialStore
     let mediaProvider: MediaProvider
     let modelContainer: ModelContainer
+    let downloadManager: DownloadManager
 
     init() {
         credentialStore = KeychainCredentialStore()
         mediaProvider = XtreamProvider()
-        if let container = try? ModelContainer(for: ProviderAccount.self) {
+
+        // Listed explicitly (not just the root ProviderAccount type) — SwiftData's
+        // schema only auto-includes types reachable via @Relationship from what you
+        // pass in, and Movie/TVSeries/WatchProgress/Download aren't related to it.
+        let schemaTypes: [any PersistentModel.Type] = [
+            ProviderAccount.self, Movie.self, TVSeries.self, TVSeason.self,
+            TVEpisode.self, WatchProgress.self, Download.self
+        ]
+        if let container = try? ModelContainer(for: Schema(schemaTypes)) {
             modelContainer = container
         } else {
-            // Should be unreachable for this simple schema — last-resort fallback so
-            // a rare disk/schema issue degrades to a working, if non-persistent, app
-            // rather than a hard crash at launch.
+            // Should be unreachable for this schema — last-resort fallback so a rare
+            // disk/schema issue degrades to a working, if non-persistent, app rather
+            // than a hard crash at launch.
             modelContainer = try! ModelContainer(
-                for: ProviderAccount.self,
+                for: Schema(schemaTypes),
                 configurations: ModelConfiguration(isStoredInMemoryOnly: true)
             )
         }
+
+        downloadManager = DownloadManager()
+        downloadManager.configure(modelContext: modelContainer.mainContext)
+        AppDelegate.downloadManager = downloadManager
     }
 }
 

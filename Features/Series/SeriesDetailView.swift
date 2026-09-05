@@ -8,6 +8,7 @@ struct SeriesDetailView: View {
     let dependencies: AppDependencies
 
     @Environment(\.modelContext) private var modelContext
+    @Query private var allDownloads: [Download]
     @State private var viewModel: SeriesDetailViewModel
     @State private var credentials: XtreamCredentials?
     @State private var playbackRequest: PlaybackRequest?
@@ -103,6 +104,40 @@ struct SeriesDetailView: View {
         play(next)
     }
 
+    private func download(for episode: SeriesEpisode) -> Download? {
+        let key = contentKey(for: episode)
+        return allDownloads.first { $0.contentKey == key }
+    }
+
+    private func downloadIconName(for episode: SeriesEpisode) -> String {
+        switch download(for: episode)?.state {
+        case .completed: return "checkmark.circle.fill"
+        case .downloading: return "arrow.down.circle.fill"
+        case .failed: return "exclamationmark.circle"
+        case .queued, .paused: return "clock"
+        case .cancelled, .none: return "arrow.down.circle"
+        }
+    }
+
+    private func downloadAction(for episode: SeriesEpisode) {
+        guard let credentials else { return }
+        if let existing = download(for: episode), existing.state == .failed || existing.state == .paused {
+            dependencies.downloadManager.resume(contentKey: existing.contentKey)
+            return
+        }
+        guard let url = dependencies.mediaProvider.episodeStreamURL(
+            credentials: credentials,
+            episodeID: episode.id,
+            containerExtension: episode.containerExtension
+        ) else { return }
+        try? dependencies.downloadManager.enqueue(
+            contentKey: contentKey(for: episode),
+            kind: .episode,
+            title: episode.title,
+            sourceURL: url
+        )
+    }
+
     private var seasonPicker: some View {
         Picker("Season", selection: Binding(
             get: { viewModel.selectedSeasonNumber ?? viewModel.seasons.first?.seasonNumber ?? 0 },
@@ -120,10 +155,10 @@ struct SeriesDetailView: View {
         let episodes = viewModel.seasons.first { $0.seasonNumber == viewModel.selectedSeasonNumber }?.episodes ?? []
         return VStack(alignment: .leading, spacing: 8) {
             ForEach(episodes) { episode in
-                Button {
-                    play(episode)
-                } label: {
-                    HStack {
+                HStack {
+                    Button {
+                        play(episode)
+                    } label: {
                         VStack(alignment: .leading) {
                             Text("Episode \(episode.episodeNumber)")
                                 .font(.caption)
@@ -132,12 +167,21 @@ struct SeriesDetailView: View {
                                 .font(.body)
                                 .foregroundStyle(.primary)
                         }
-                        Spacer()
-                        Image(systemName: "play.circle")
-                            .foregroundStyle(.secondary)
                     }
+                    .buttonStyle(.plain)
+                    .disabled(credentials == nil)
+
+                    Spacer()
+
+                    Button {
+                        downloadAction(for: episode)
+                    } label: {
+                        Image(systemName: downloadIconName(for: episode))
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(credentials == nil || download(for: episode)?.state == .completed
+                        || download(for: episode)?.state == .downloading)
                 }
-                .disabled(credentials == nil)
                 .padding(.vertical, 4)
                 Divider()
             }

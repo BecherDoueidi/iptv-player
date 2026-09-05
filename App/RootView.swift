@@ -13,6 +13,8 @@ struct RootView: View {
                     .tabItem { Label("Movies", systemImage: "film") }
                 SeriesListView(account: account, dependencies: dependencies)
                     .tabItem { Label("Series", systemImage: "tv") }
+                DownloadsListView(dependencies: dependencies)
+                    .tabItem { Label("Downloads", systemImage: "arrow.down.circle") }
             }
         } else {
             LoginView(dependencies: dependencies)

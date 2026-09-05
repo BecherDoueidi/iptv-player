@@ -77,28 +77,64 @@ costing a sideload and a scarce free-tier App ID slot to discover.
 
 ## Download engine
 
-`DownloadManager` (`@MainActor`) owns one background `URLSession`
-(`delegateQueue: .main`, deliberately — lets delegate callbacks touch SwiftData's
-`ModelContext` directly without cross-actor `Sendable` machinery, a simplification
-appropriate for a personal app's single instance, not a general pattern). Delegate
-methods are `nonisolated` + `MainActor.assumeIsolated`, not `Task { @MainActor in
-}`, because `didFinishDownloadingTo`'s temp file is deleted the instant that
-method returns — it must be moved synchronously.
+`DownloadManager` (`@MainActor`) owns one `URLSession` (`delegateQueue: .main`,
+deliberately — lets delegate callbacks touch SwiftData's `ModelContext` directly
+without cross-actor `Sendable` machinery, a simplification appropriate for a
+personal app's single instance, not a general pattern). Delegate methods are
+`nonisolated` + `MainActor.assumeIsolated`.
 
-Relaunch recovery cross-references live OS-tracked tasks against persisted
-`Download` rows so the UI never shows a stale "downloading" state, and sweeps
-orphaned files with no matching row. A 100KB floor on completed files catches a
-common Xtream-panel failure mode: an HTML error page returned with a 200 status
-instead of real video.
+The engine is shaped almost entirely by one property of the target panels: **they
+close the connection every ~25 MB of a multi-hundred-megabyte file.** Four
+consequences, each of which was a shipped bug first:
 
-**Known limitation:** if a background download completes while the app is fully
-killed and iOS relaunches it, there's a narrow race where
-`handleEventsForBackgroundURLSession` could fire before `AppDependencies` finishes
-constructing, in which case its completion handler is never captured. The
-download itself still completes correctly via the delegate callbacks either way —
-only the OS's bookkeeping of "app finished handling this" is skipped. This is a
-real background-execution scenario that can't be verified from CI; flagged for
-manual on-device verification rather than silently assumed safe.
+1. **Not a background session.** `URLSessionConfiguration.background` transfers
+   out-of-process via `nsurlsessiond`, which these panels cut off after a few
+   kilobytes — while VLC streams the identical URLs fine. A default session behaves
+   like a normal client and transfers at full speed. The cost is that downloads only
+   run while the app is active; `resumeInterruptedDownloads()` continues them on
+   foreground, which is affordable only because of (2).
+2. **Not a download task.** `URLSessionDownloadTask` only hands over its data when a
+   segment *completes*, so every mid-segment drop discarded the whole segment — the
+   download restarted from zero, forever. A `URLSessionDataTask` appends each chunk
+   to a `.part` file as it arrives, so the file on disk is always an accurate record
+   of what has been received and the next `Range: bytes=<offset>-` is always correct.
+3. **A clean close is not a completed download.** `URLSession` reports a truncated
+   transfer as a success; truncation is detected by comparing bytes on disk against
+   `Content-Length`. A 200 in reply to a `Range` request means the server ignored it,
+   where appending would silently corrupt the file — that case fails loudly instead.
+4. **Reconnects back off.** Panels cap concurrent connections per account and answer
+   a request over the cap with a bare 404, so an instant reconnect (before the lost
+   socket is released server-side) trips it. 0.75s after a productive segment; longer
+   after one that transferred nothing, where the cap is the likely cause. A refusal
+   with bytes already on disk is retried; a refusal on the very first request is not.
+
+Progress mutations are throttled to 1/sec: SwiftData notifies every `@Query`
+observing `Download` on each mutation, and re-rendering an episode list on the main
+thread starves the very callbacks driving the transfer.
+
+Relaunch reconciliation keeps `.part` files, so an interrupted download resumes
+rather than restarting. A 100KB floor on completed files catches a common panel
+failure mode: an HTML error page returned with a 200 status instead of real video.
+
+**Practical constraint, not a code issue:** with a 1-connection account, playback and
+downloading fight over the same slot and knock each other out.
+
+## Live TV
+
+`get_live_categories`/`get_live_streams` mirrored into `LiveChannel` rows, cached and
+persisted with the same bulk-fetch-and-map approach as the movie/series catalogs (a
+query per row is what froze those screens; live lists are larger still).
+
+EPG is fetched per channel on demand from `get_short_epg`, never inline in rows —
+it's one request per channel against lists of thousands. Titles and descriptions come
+back base64-encoded, timestamps as either a unix epoch or a formatted string, and
+panels are inconsistent about all of it, so decoding tolerates every combination and
+treats a value that isn't valid base64 as already-plain text.
+
+`PlaybackRequest.isLive` suppresses the scrubber, skip buttons, resume position and
+watch-progress rows — none of which mean anything for a continuous stream. Channels
+are requested as MPEG-TS (`/live/{user}/{pass}/{id}.ts`), which VLC opens faster than
+the panel's HLS alternative.
 
 ## Build/signing pipeline
 

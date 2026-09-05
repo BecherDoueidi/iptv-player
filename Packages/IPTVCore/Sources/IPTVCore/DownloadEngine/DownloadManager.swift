@@ -23,6 +23,7 @@ public final class DownloadManager: NSObject {
     /// multi-gigabyte file — but bounded, so a server that will never serve the whole
     /// file fails visibly instead of retrying forever.
     private static let maximumSegmentAttempts = 500
+    private static let maximumEmptyAttempts = 6
     /// Sent because some panels truncate or refuse transfers for unrecognised clients.
     private static let playerUserAgent = "VLC/3.0.20 LibVLC/3.0.20"
 
@@ -37,6 +38,9 @@ public final class DownloadManager: NSObject {
     /// by the current (ranged) task can be shown as progress through the whole file.
     private var segmentBaseBytes: [String: Int64] = [:]
     private var segmentAttempts: [String: Int] = [:]
+    /// Run of consecutive attempts that transferred nothing at all — the signal that a
+    /// stream genuinely can't be downloaded, as opposed to a flaky connection.
+    private var consecutiveEmptyAttempts: [String: Int] = [:]
 
     // `nonisolated` so this can be constructed from AppDependencies' own nonisolated
     // init (which itself must stay nonisolated — see EnvironmentKey.defaultValue).
@@ -92,6 +96,7 @@ public final class DownloadManager: NSObject {
         // A fresh enqueue starts from zero — drop any partial left by a previous attempt.
         try? FileManager.default.removeItem(at: partFileURL(for: contentKey))
         segmentAttempts[contentKey] = 0
+        consecutiveEmptyAttempts[contentKey] = 0
         try? modelContext.save()
 
         startSegment(for: download)
@@ -99,11 +104,9 @@ public final class DownloadManager: NSObject {
 
     public func pause(contentKey: String) {
         guard let task = tasksByContentKey[contentKey] else { return }
-        task.cancel { [weak self] _ in
+        task.cancel { [weak self] resumeData in
             Task { @MainActor in
-                // Resume data is deliberately unused: continuation is driven by the
-                // `.part` file's size, which survives relaunches and app termination.
-                self?.applyPause(contentKey: contentKey)
+                self?.applyPause(contentKey: contentKey, resumeData: resumeData)
             }
         }
     }
@@ -111,6 +114,7 @@ public final class DownloadManager: NSObject {
     public func resume(contentKey: String) {
         guard let download = cachedDownload(forKey: contentKey) else { return }
         segmentAttempts[contentKey] = 0
+        consecutiveEmptyAttempts[contentKey] = 0
         download.lastError = nil
         startSegment(for: download)
     }
@@ -129,6 +133,7 @@ public final class DownloadManager: NSObject {
             guard tasksByContentKey[download.contentKey] == nil else { continue }
             downloadsByContentKey[download.contentKey] = download
             segmentAttempts[download.contentKey] = 0
+            consecutiveEmptyAttempts[download.contentKey] = 0
             startSegment(for: download)
         }
     }
@@ -147,6 +152,7 @@ public final class DownloadManager: NSObject {
         lastProgressSaveAt[contentKey] = nil
         segmentBaseBytes[contentKey] = nil
         segmentAttempts[contentKey] = nil
+        consecutiveEmptyAttempts[contentKey] = nil
         modelContext.delete(download)
         try? modelContext.save()
     }
@@ -186,13 +192,20 @@ public final class DownloadManager: NSObject {
         let contentKey = download.contentKey
         let offset = bytesOnDisk(for: contentKey)
 
-        var request = URLRequest(url: url)
-        request.setValue(Self.playerUserAgent, forHTTPHeaderField: "User-Agent")
-        if offset > 0 {
-            request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
+        let task: URLSessionDownloadTask
+        if let resumeData = download.resumeData {
+            // Salvages the bytes of an interrupted segment, which live in URLSession's
+            // own temp file and would otherwise be thrown away.
+            download.resumeData = nil
+            task = session.downloadTask(withResumeData: resumeData)
+        } else {
+            var request = URLRequest(url: url)
+            request.setValue(Self.playerUserAgent, forHTTPHeaderField: "User-Agent")
+            if offset > 0 {
+                request.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
+            }
+            task = session.downloadTask(with: request)
         }
-
-        let task = session.downloadTask(with: request)
         task.taskDescription = contentKey
         tasksByContentKey[contentKey] = task
         segmentBaseBytes[contentKey] = offset
@@ -202,9 +215,11 @@ public final class DownloadManager: NSObject {
         task.resume()
     }
 
-    private func applyPause(contentKey: String) {
+    private func applyPause(contentKey: String, resumeData: Data?) {
         tasksByContentKey[contentKey] = nil
         guard let modelContext, let download = cachedDownload(forKey: contentKey) else { return }
+        // Retains the in-flight segment so resuming doesn't refetch it.
+        download.resumeData = resumeData
         download.bytesReceived = bytesOnDisk(for: contentKey)
         download.state = .paused
         try? modelContext.save()
@@ -433,13 +448,17 @@ extension DownloadManager: URLSessionDownloadDelegate {
             guard let download = cachedDownload(forKey: contentKey) else { return }
             tasksByContentKey[contentKey] = nil
 
-            // A dropped connection mid-file is the normal case with these panels, not a
-            // dead end: whatever landed on disk is kept and the next segment resumes.
-            let onDisk = bytesOnDisk(for: contentKey)
-            download.bytesReceived = onDisk
+            // Keep the interrupted segment's bytes. They live in URLSession's own temp
+            // file, not our `.part` file, so without this the whole segment is lost and
+            // the retry re-fetches ground already covered.
+            download.resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data
+
+            // Progress has to be judged by what the *task* received, not by the `.part`
+            // file — nothing is appended to `.part` until a segment finishes, so a
+            // dropped connection always looks like zero progress on disk.
             continueOrFail(
                 download,
-                madeProgress: onDisk > (segmentBaseBytes[contentKey] ?? 0),
+                madeProgress: task.countOfBytesReceived > 0,
                 underlyingError: error.localizedDescription
             )
         }
@@ -460,10 +479,15 @@ private extension DownloadManager {
         let attempts = (segmentAttempts[contentKey] ?? 0) + 1
         segmentAttempts[contentKey] = attempts
 
-        guard madeProgress else {
-            try? FileManager.default.removeItem(at: partFileURL(for: contentKey))
+        // A single fruitless attempt isn't proof the stream can't be downloaded — a
+        // transient network drop looks identical. Only a run of them is conclusive.
+        let barren = madeProgress ? 0 : (consecutiveEmptyAttempts[contentKey] ?? 0) + 1
+        consecutiveEmptyAttempts[contentKey] = barren
+        guard barren < Self.maximumEmptyAttempts else {
+            // The partial file is deliberately left in place, so Retry picks up from
+            // wherever it got to rather than starting over.
             fail(download, message: underlyingError
-                ?? "The server stopped sending data and doesn't support resuming — this stream can't be downloaded.")
+                ?? "The server stopped sending data — this stream can't be downloaded.")
             return
         }
         guard attempts < Self.maximumSegmentAttempts else {
@@ -472,7 +496,7 @@ private extension DownloadManager {
         }
         // Shown in the Downloads row while still in `.downloading`, so a transfer that
         // is limping along via reconnects is visibly different from a healthy one.
-        download.lastError = "Server closed the connection — reconnect \(attempts)"
+        download.lastError = "Connection dropped — reconnecting (\(attempts))"
         try? modelContext?.save()
         startSegment(for: download)
     }

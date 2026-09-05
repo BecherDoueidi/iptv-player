@@ -9,6 +9,8 @@ struct SeriesDetailView: View {
 
     @Environment(\.modelContext) private var modelContext
     @State private var viewModel: SeriesDetailViewModel
+    @State private var credentials: XtreamCredentials?
+    @State private var playbackRequest: PlaybackRequest?
 
     init(series: SeriesSummary, account: ProviderAccount, dependencies: AppDependencies) {
         self.series = series
@@ -59,9 +61,24 @@ struct SeriesDetailView: View {
         }
         .navigationTitle(series.title)
         .navigationBarTitleDisplayMode(.inline)
+        .fullScreenCover(item: $playbackRequest) { request in
+            PlayerScreen(request: request)
+        }
         .task {
+            credentials = try? dependencies.credentialStore.loadCredentials()
             await viewModel.loadIfNeeded(modelContext: modelContext)
         }
+    }
+
+    private func play(_ episode: SeriesEpisode) {
+        guard let credentials,
+              let url = dependencies.mediaProvider.episodeStreamURL(
+                credentials: credentials,
+                episodeID: episode.id,
+                containerExtension: episode.containerExtension
+              )
+        else { return }
+        playbackRequest = PlaybackRequest(url: url, title: episode.title)
     }
 
     private var seasonPicker: some View {
@@ -81,13 +98,24 @@ struct SeriesDetailView: View {
         let episodes = viewModel.seasons.first { $0.seasonNumber == viewModel.selectedSeasonNumber }?.episodes ?? []
         return VStack(alignment: .leading, spacing: 8) {
             ForEach(episodes) { episode in
-                VStack(alignment: .leading) {
-                    Text("Episode \(episode.episodeNumber)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(episode.title)
-                        .font(.body)
+                Button {
+                    play(episode)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text("Episode \(episode.episodeNumber)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(episode.title)
+                                .font(.body)
+                                .foregroundStyle(.primary)
+                        }
+                        Spacer()
+                        Image(systemName: "play.circle")
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .disabled(credentials == nil)
                 .padding(.vertical, 4)
                 Divider()
             }

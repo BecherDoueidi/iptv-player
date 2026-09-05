@@ -11,4 +11,6 @@ public protocol MediaProvider {
     func fetchSeriesCategories(credentials: XtreamCredentials) async throws -> [MediaCategory]
     func fetchSeries(credentials: XtreamCredentials, categoryID: String?) async throws -> [SeriesSummary]
     func fetchSeriesDetail(credentials: XtreamCredentials, seriesID: String) async throws -> SeriesDetail
+    func movieStreamURL(credentials: XtreamCredentials, movieID: String, containerExtension: String?) -> URL?
+    func episodeStreamURL(credentials: XtreamCredentials, episodeID: String, containerExtension: String?) -> URL?
 }

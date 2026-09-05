@@ -8,6 +8,8 @@ struct MovieDetailView: View {
     @State private var detail: MovieDetail?
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var credentials: XtreamCredentials?
+    @State private var playbackRequest: PlaybackRequest?
 
     var body: some View {
         ScrollView {
@@ -36,6 +38,15 @@ struct MovieDetailView: View {
                         .foregroundStyle(.yellow)
                 }
 
+                Button {
+                    play()
+                } label: {
+                    Label("Play", systemImage: "play.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(credentials == nil)
+
                 if isLoading {
                     ProgressView()
                 } else if let errorMessage {
@@ -48,13 +59,17 @@ struct MovieDetailView: View {
         }
         .navigationTitle(movie.title)
         .navigationBarTitleDisplayMode(.inline)
+        .fullScreenCover(item: $playbackRequest) { request in
+            PlayerScreen(request: request)
+        }
         .task {
+            credentials = try? dependencies.credentialStore.loadCredentials()
             await loadDetail()
         }
     }
 
     private func loadDetail() async {
-        guard let credentials = try? dependencies.credentialStore.loadCredentials() else {
+        guard let credentials else {
             errorMessage = "Missing saved credentials."
             return
         }
@@ -65,5 +80,16 @@ struct MovieDetailView: View {
         } catch {
             errorMessage = "Couldn't load details."
         }
+    }
+
+    private func play() {
+        guard let credentials,
+              let url = dependencies.mediaProvider.movieStreamURL(
+                credentials: credentials,
+                movieID: movie.id,
+                containerExtension: movie.containerExtension
+              )
+        else { return }
+        playbackRequest = PlaybackRequest(url: url, title: movie.title)
     }
 }

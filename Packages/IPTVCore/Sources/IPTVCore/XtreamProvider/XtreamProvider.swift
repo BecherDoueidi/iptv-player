@@ -41,4 +41,12 @@ public final class XtreamProvider: MediaProvider {
         let response = try await apiClient.fetchSeriesDetail(credentials: credentials, seriesID: seriesID)
         return XtreamMapper.makeSeriesDetail(id: seriesID, from: response)
     }
+
+    public func movieStreamURL(credentials: XtreamCredentials, movieID: String, containerExtension: String?) -> URL? {
+        XtreamURLBuilder.movieStreamURL(credentials: credentials, movieID: movieID, containerExtension: containerExtension)
+    }
+
+    public func episodeStreamURL(credentials: XtreamCredentials, episodeID: String, containerExtension: String?) -> URL? {
+        XtreamURLBuilder.episodeStreamURL(credentials: credentials, episodeID: episodeID, containerExtension: containerExtension)
+    }
 }

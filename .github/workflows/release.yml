@@ -71,6 +71,21 @@ jobs:
           echo "--- NSAppTransportSecurity only ---"
           /usr/libexec/PlistBuddy -c "Print :NSAppTransportSecurity" "$APP_PATH/Info.plist"
 
+      # A missing embedded VLCKit wouldn't fail the build — it would dyld-crash the
+      # app on launch, wasting a sideload/App-ID slot to discover. Check it here.
+      - name: Verify VLCKit is embedded in the app bundle
+        run: |
+          set -euo pipefail
+          APP_PATH="build/Build/Products/Release-iphoneos/IPTVPlayer.app"
+          echo "--- Frameworks directory ---"
+          ls -la "$APP_PATH/Frameworks" || true
+          if ! ls "$APP_PATH/Frameworks" 2>/dev/null | grep -iq vlc; then
+            echo "VLCKit framework is NOT embedded in the app bundle — it would crash on launch." >&2
+            exit 1
+          fi
+          echo "--- Linked libraries referenced by the binary ---"
+          otool -L "$APP_PATH/IPTVPlayer" | grep -i vlc || true
+
       - name: Package .app into an .ipa (Payload/ zip)
         run: |
           set -euo pipefail

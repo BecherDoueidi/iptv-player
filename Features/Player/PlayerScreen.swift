@@ -12,6 +12,7 @@ struct PlayerScreen: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage("autoplayNextEpisode") private var autoplayNextEpisode = false
     @State private var showNextEpisodePrompt = false
+    @State private var playbackErrorMessage: String?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -21,7 +22,8 @@ struct PlayerScreen: View {
                 url: request.url,
                 initialPosition: resumePosition(),
                 onProgress: saveProgress,
-                onFinished: handleFinished
+                onFinished: handleFinished,
+                onError: { playbackErrorMessage = $0 }
             )
             .ignoresSafeArea()
 
@@ -33,6 +35,27 @@ struct PlayerScreen: View {
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(.white, .black.opacity(0.6))
                     .padding()
+            }
+
+            if let playbackErrorMessage {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.largeTitle)
+                        .foregroundStyle(.yellow)
+                    Text("Unable to play this stream")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                    Text(playbackErrorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.85))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                    Button("Close") { dismiss() }
+                        .buttonStyle(.borderedProminent)
+                }
+                .padding(24)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .padding(32)
             }
 
             if showNextEpisodePrompt, let onRequestNextEpisode {

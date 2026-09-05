@@ -10,9 +10,10 @@ struct PlayerViewControllerRepresentable: UIViewControllerRepresentable {
     let initialPosition: TimeInterval
     let onProgress: (TimeInterval, TimeInterval) -> Void
     let onFinished: () -> Void
+    let onError: (String) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onProgress: onProgress, onFinished: onFinished)
+        Coordinator(onProgress: onProgress, onFinished: onFinished, onError: onError)
     }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
@@ -42,6 +43,27 @@ struct PlayerViewControllerRepresentable: UIViewControllerRepresentable {
             context.coordinator.onFinished()
         }
 
+        // Covers a mid-stream failure (e.g. connection drops after playback started).
+        context.coordinator.failureObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { notification in
+            let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
+            context.coordinator.onError(error?.localizedDescription ?? "Playback failed.")
+        }
+
+        // Covers the item never becoming playable at all (bad URL, 404, unsupported
+        // container/codec) — previously this failed completely silently, showing a
+        // blank player with no indication anything was wrong.
+        context.coordinator.statusObservation = item.observe(\.status, options: [.new]) { observedItem, _ in
+            guard observedItem.status == .failed else { return }
+            let message = observedItem.error?.localizedDescription ?? "Unable to play this stream."
+            DispatchQueue.main.async {
+                context.coordinator.onError(message)
+            }
+        }
+
         player.play()
         return controller
     }
@@ -55,18 +77,30 @@ struct PlayerViewControllerRepresentable: UIViewControllerRepresentable {
         if let observer = coordinator.finishObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = coordinator.failureObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        coordinator.statusObservation?.invalidate()
         uiViewController.player?.pause()
     }
 
     final class Coordinator {
         let onProgress: (TimeInterval, TimeInterval) -> Void
         let onFinished: () -> Void
+        let onError: (String) -> Void
         var timeObserverToken: Any?
         var finishObserver: NSObjectProtocol?
+        var failureObserver: NSObjectProtocol?
+        var statusObservation: NSKeyValueObservation?
 
-        init(onProgress: @escaping (TimeInterval, TimeInterval) -> Void, onFinished: @escaping () -> Void) {
+        init(
+            onProgress: @escaping (TimeInterval, TimeInterval) -> Void,
+            onFinished: @escaping () -> Void,
+            onError: @escaping (String) -> Void
+        ) {
             self.onProgress = onProgress
             self.onFinished = onFinished
+            self.onError = onError
         }
     }
 }

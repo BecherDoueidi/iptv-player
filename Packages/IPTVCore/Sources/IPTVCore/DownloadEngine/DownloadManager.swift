@@ -26,8 +26,13 @@ public final class DownloadManager: NSObject {
     /// A run of attempts that transfer nothing at all is the real "can't download this"
     /// signal; any single one of them could just be a transient network drop.
     private static let maximumEmptyAttempts = 6
+    private static let reconnectDelaySeconds: Double = 3
     /// Sent because some panels truncate or refuse transfers for unrecognised clients.
     private static let playerUserAgent = "VLC/3.0.20 LibVLC/3.0.20"
+    /// Statuses these panels return when they're temporarily unwilling rather than
+    /// permanently unable — most importantly the bare 404 used for "too many
+    /// connections on this account".
+    private static let retryableStatusCodes: Set<Int> = [403, 404, 408, 429, 500, 502, 503, 504]
 
     private var session: URLSession!
     private var modelContext: ModelContext?
@@ -43,6 +48,9 @@ public final class DownloadManager: NSObject {
     private var segmentBaseBytes: [String: Int64] = [:]
     private var segmentAttempts: [String: Int] = [:]
     private var consecutiveEmptyAttempts: [String: Int] = [:]
+    /// Pending backoff timers between segments, cancellable so a pause or delete takes
+    /// effect immediately instead of firing a reconnect afterwards.
+    private var retryTasks: [String: Task<Void, Never>] = [:]
     /// Set when a segment is deliberately stopped, so its `didCompleteWithError` isn't
     /// mistaken for the server dropping the connection.
     private var intentionallyStopped: Set<String> = []
@@ -191,6 +199,8 @@ public final class DownloadManager: NSObject {
     /// Cancels the in-flight segment without treating the resulting error as a server
     /// drop. Bytes already written to the `.part` file are kept.
     private func stopSegment(contentKey: String) {
+        retryTasks[contentKey]?.cancel()
+        retryTasks[contentKey] = nil
         if tasksByContentKey[contentKey] != nil {
             intentionallyStopped.insert(contentKey)
         }
@@ -348,7 +358,26 @@ extension DownloadManager: URLSessionDataDelegate {
             let http = response as? HTTPURLResponse
             if let http, !(200...299).contains(http.statusCode) {
                 completionHandler(.cancel)
-                fail(download, message: "The server refused the download (HTTP \(http.statusCode)).")
+                // Claim the resulting cancellation so `didCompleteWithError` doesn't
+                // also treat it as a dropped connection and retry a second time.
+                intentionallyStopped.insert(contentKey)
+                tasksByContentKey[contentKey] = nil
+                // Panels cap concurrent connections per account and answer a request
+                // over that cap with an outright 404/403 rather than anything
+                // descriptive. Since the connection we just dropped may not have been
+                // released server-side yet, a refusal part-way through a file is worth
+                // retrying (with backoff) instead of condemning the download.
+                let refusedMidTransfer = Self.retryableStatusCodes.contains(http.statusCode)
+                    && bytesOnDisk(for: contentKey) > 0
+                if refusedMidTransfer {
+                    continueOrFail(
+                        download,
+                        madeProgress: false,
+                        underlyingError: "The server refused the download (HTTP \(http.statusCode))."
+                    )
+                } else {
+                    fail(download, message: "The server refused the download (HTTP \(http.statusCode)).")
+                }
                 return
             }
 
@@ -471,10 +500,25 @@ private extension DownloadManager {
             return
         }
 
-        // Shown in the Downloads row while still in `.downloading`, so a transfer that
-        // is limping along via reconnects is visibly different from a healthy one.
-        download.lastError = "Connection dropped — reconnecting (\(attempts))"
+        // Reconnecting instantly is what trips a panel's per-account connection cap:
+        // the socket we just lost may not be released server-side yet, and the panel
+        // answers the replacement request with a bare 404. Backing off — harder after
+        // an attempt that transferred nothing — gives it time to let go.
+        let delay = madeProgress ? Self.reconnectDelaySeconds : Self.reconnectDelaySeconds * Double(barren + 1)
+        download.lastError = "\(underlyingError ?? "Connection dropped") Reconnecting (\(attempts))…"
+        download.state = .downloading
         try? modelContext?.save()
-        startSegment(for: download)
+
+        let contentKeyForRetry = contentKey
+        retryTasks[contentKey]?.cancel()
+        retryTasks[contentKey] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.retryTasks[contentKeyForRetry] = nil
+            // The user may have paused, cancelled or deleted it while we waited.
+            guard let current = self.cachedDownload(forKey: contentKeyForRetry),
+                  current.state == .downloading else { return }
+            self.startSegment(for: current)
+        }
     }
 }

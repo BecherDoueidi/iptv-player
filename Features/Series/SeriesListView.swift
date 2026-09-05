@@ -2,6 +2,9 @@ import SwiftUI
 import SwiftData
 import IPTVCore
 
+/// Landing screen for Series: All / Favourites / History, then the provider's own
+/// categories. Typing in the search field replaces the section list with matches from
+/// the whole catalog.
 struct SeriesListView: View {
     let account: ProviderAccount
     let dependencies: AppDependencies
@@ -15,8 +18,6 @@ struct SeriesListView: View {
         _viewModel = State(initialValue: SeriesViewModel(dependencies: dependencies, account: account))
     }
 
-    private let columns = [GridItem(.adaptive(minimum: 110), spacing: 12)]
-
     var body: some View {
         NavigationStack {
             Group {
@@ -28,91 +29,56 @@ struct SeriesListView: View {
                         systemImage: "exclamationmark.triangle",
                         description: Text(errorMessage)
                     )
-                } else if viewModel.filteredSeries.isEmpty {
-                    ContentUnavailableView("No series found", systemImage: "tv")
+                } else if viewModel.isSearching {
+                    grid(for: viewModel.searchResults, emptyMessage: "No series matches that name.")
                 } else {
-                    ScrollView {
-                        categoryPicker
-                        LazyVGrid(columns: columns, spacing: 16) {
-                            ForEach(viewModel.filteredSeries) { series in
-                                NavigationLink(value: series) {
-                                    SeriesPosterCell(series: series)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding()
-                    }
+                    CatalogSectionList(
+                        sections: viewModel.sections,
+                        title: \.title,
+                        systemImage: \.systemImage,
+                        tint: \.tint,
+                        count: { viewModel.seriesCount(in: $0) }
+                    )
                 }
             }
             .navigationTitle("Series")
-            .searchable(text: $viewModel.searchText)
+            .searchable(text: $viewModel.searchText, prompt: "Search all series")
+            .navigationDestination(for: CatalogSection.self) { section in
+                grid(for: viewModel.series(in: section), emptyMessage: emptyMessage(for: section))
+                    .navigationTitle(section.title)
+                    .navigationBarTitleDisplayMode(.inline)
+            }
             .navigationDestination(for: SeriesSummary.self) { series in
                 SeriesDetailView(series: series, account: account, dependencies: dependencies)
             }
             .task {
                 await viewModel.loadIfNeeded(modelContext: modelContext)
             }
+            .onAppear {
+                // Favourites and history change from the detail screen, so they're
+                // re-read on the way back rather than only at first load.
+                viewModel.loadFavorites(modelContext: modelContext)
+                viewModel.loadHistory(modelContext: modelContext)
+            }
             .refreshable {
                 await viewModel.refresh(modelContext: modelContext)
+                viewModel.loadFavorites(modelContext: modelContext)
+                viewModel.loadHistory(modelContext: modelContext)
             }
         }
     }
 
-    @ViewBuilder
-    private var categoryPicker: some View {
-        if !viewModel.categories.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack {
-                    categoryChip(title: "All", isSelected: viewModel.selectedCategoryID == nil) {
-                        viewModel.selectedCategoryID = nil
-                    }
-                    ForEach(viewModel.categories) { category in
-                        categoryChip(title: category.name, isSelected: viewModel.selectedCategoryID == category.id) {
-                            viewModel.selectedCategoryID = category.id
-                        }
-                    }
-                }
-                .padding(.horizontal)
-            }
+    private func grid(for series: [SeriesSummary], emptyMessage: String) -> some View {
+        PosterGrid(items: series, emptyMessage: emptyMessage, emptySystemImage: "tv") { item in
+            PosterCell(title: item.title, posterURL: item.posterURL, placeholderSystemImage: "tv")
         }
     }
 
-    private func categoryChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.subheadline)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(isSelected ? Color.accentColor : Color.secondary.opacity(0.2))
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
-                .clipShape(Capsule())
-        }
-    }
-
-}
-
-private struct SeriesPosterCell: View {
-    let series: SeriesSummary
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            AsyncImage(url: series.posterURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().aspectRatio(2 / 3, contentMode: .fill)
-                default:
-                    Rectangle()
-                        .fill(.secondary.opacity(0.2))
-                        .aspectRatio(2 / 3, contentMode: .fit)
-                        .overlay(Image(systemName: "tv").foregroundStyle(.secondary))
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            Text(series.title)
-                .font(.caption)
-                .lineLimit(2)
+    private func emptyMessage(for section: CatalogSection) -> String {
+        switch section {
+        case .favorites: return "Favourite a series to see it here."
+        case .history: return "Series you play will show up here."
+        default: return "This category has no series."
         }
     }
 }

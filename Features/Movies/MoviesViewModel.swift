@@ -7,11 +7,17 @@ import IPTVCore
 final class MoviesViewModel {
     private(set) var categories: [MediaCategory] = []
     private(set) var movies: [MovieSummary] = []
-    private(set) var continueWatching: [MovieSummary] = []
     private(set) var isLoading = false
     private(set) var errorMessage: String?
-    var selectedCategoryID: String?
     var searchText: String = ""
+
+    /// Content keys of favourited movies, and provider IDs of recently played ones
+    /// (most recent first). Both refreshed from the store rather than observed with
+    /// `@Query` — a per-row query on a catalog this size is what froze the app.
+    private(set) var favoriteKeys: Set<String> = []
+    private(set) var historyIDs: [String] = []
+
+    private static let historyLimit = 50
 
     private let dependencies: AppDependencies
     private let account: ProviderAccount
@@ -23,19 +29,68 @@ final class MoviesViewModel {
         self.credentials = try? dependencies.credentialStore.loadCredentials()
     }
 
-    var filteredMovies: [MovieSummary] {
-        movies.filter { movie in
-            let matchesCategory = selectedCategoryID == nil || movie.categoryID == selectedCategoryID
-            let trimmedSearch = searchText.trimmingCharacters(in: .whitespaces)
-            let matchesSearch = trimmedSearch.isEmpty || movie.title.localizedCaseInsensitiveContains(trimmedSearch)
-            return matchesCategory && matchesSearch
+    func contentKey(for movie: MovieSummary) -> String {
+        ContentKey.make(sourceID: account.sourceID, kind: .movie, providerID: movie.id)
+    }
+
+    var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Search spans the whole catalog, not the section being viewed — being told "no
+    /// results" for a film that exists, because of which section you were in, is wrong.
+    var searchResults: [MovieSummary] {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return [] }
+        return movies.filter { $0.title.localizedCaseInsensitiveContains(query) }
+    }
+
+    var sections: [CatalogSection] {
+        [.all(title: "All Movies"), .favorites, .history] + categories.map { .category(id: $0.id, name: $0.name) }
+    }
+
+    func movies(in section: CatalogSection) -> [MovieSummary] {
+        switch section {
+        case .all:
+            return movies
+        case .favorites:
+            return movies.filter { favoriteKeys.contains(contentKey(for: $0)) }
+        case .history:
+            let byID = Dictionary(movies.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return historyIDs.compactMap { byID[$0] }
+        case .category(let id, _):
+            return movies.filter { $0.categoryID == id }
         }
+    }
+
+    func movieCount(in section: CatalogSection) -> Int {
+        movies(in: section).count
+    }
+
+    @MainActor
+    func loadFavorites(modelContext: ModelContext) {
+        guard let favorites = try? modelContext.fetch(FetchDescriptor<Favorite>()) else { return }
+        favoriteKeys = Set(favorites.map(\.contentKey))
+    }
+
+    @MainActor
+    func loadHistory(modelContext: ModelContext) {
+        var descriptor = FetchDescriptor<Movie>(
+            predicate: #Predicate { $0.lastPlayedAt != nil },
+            sortBy: [SortDescriptor(\.lastPlayedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = Self.historyLimit
+        guard let rows = try? modelContext.fetch(descriptor) else { return }
+        let prefix = "\(account.sourceID)|movie|"
+        historyIDs = rows.filter { $0.contentKey.hasPrefix(prefix) }.map(\.providerID)
     }
 
     @MainActor
     func loadIfNeeded(modelContext: ModelContext) async {
         guard movies.isEmpty, !isLoading else { return }
         loadFromCache(modelContext: modelContext)
+        loadFavorites(modelContext: modelContext)
+        loadHistory(modelContext: modelContext)
         await refresh(modelContext: modelContext)
     }
 
@@ -84,37 +139,6 @@ final class MoviesViewModel {
         } catch {
             errorMessage = Self.errorMessage(for: error)
         }
-    }
-
-    /// Movies-only for now (episodes have their own progress rows too, but a unified
-    /// cross-media Continue Watching row is deferred to a later polish pass — this
-    /// still satisfies "most-recent-incomplete first" ordering for the Movies tab).
-    @MainActor
-    func loadContinueWatching(modelContext: ModelContext) {
-        let progressDescriptor = FetchDescriptor<WatchProgress>(
-            predicate: #Predicate { !$0.isCompleted },
-            sortBy: [SortDescriptor(\.lastPlayedAt, order: .reverse)]
-        )
-        guard let allProgress = try? modelContext.fetch(progressDescriptor) else { return }
-
-        let prefix = "\(account.sourceID)|movie|"
-        let relevant = allProgress.filter { $0.contentKey.hasPrefix(prefix) }
-
-        guard let allMovies = try? modelContext.fetch(FetchDescriptor<Movie>()) else { return }
-        let movieByKey = Dictionary(uniqueKeysWithValues: allMovies.map { ($0.contentKey, $0) })
-
-        continueWatching = Array(relevant.compactMap { progress -> MovieSummary? in
-            guard let movie = movieByKey[progress.contentKey] else { return nil }
-            return MovieSummary(
-                id: movie.providerID,
-                categoryID: movie.categoryID,
-                title: movie.title,
-                posterURL: movie.posterURL,
-                containerExtension: movie.containerExtension,
-                rating: movie.rating,
-                addedAt: movie.addedAt
-            )
-        }.prefix(10))
     }
 
     /// One bulk fetch + in-memory dictionary lookup, not a query per movie — a

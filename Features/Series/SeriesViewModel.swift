@@ -9,8 +9,15 @@ final class SeriesViewModel {
     private(set) var seriesList: [SeriesSummary] = []
     private(set) var isLoading = false
     private(set) var errorMessage: String?
-    var selectedCategoryID: String?
     var searchText: String = ""
+
+    /// Content keys of favourited series, and provider IDs of recently played ones
+    /// (most recent first). Refreshed from the store rather than observed with
+    /// `@Query` — a per-row query on a catalog this size is what froze the app.
+    private(set) var favoriteKeys: Set<String> = []
+    private(set) var historyIDs: [String] = []
+
+    private static let historyLimit = 50
 
     private let dependencies: AppDependencies
     private let account: ProviderAccount
@@ -22,19 +29,67 @@ final class SeriesViewModel {
         self.credentials = try? dependencies.credentialStore.loadCredentials()
     }
 
-    var filteredSeries: [SeriesSummary] {
-        seriesList.filter { series in
-            let matchesCategory = selectedCategoryID == nil || series.categoryID == selectedCategoryID
-            let trimmedSearch = searchText.trimmingCharacters(in: .whitespaces)
-            let matchesSearch = trimmedSearch.isEmpty || series.title.localizedCaseInsensitiveContains(trimmedSearch)
-            return matchesCategory && matchesSearch
+    func contentKey(for series: SeriesSummary) -> String {
+        ContentKey.make(sourceID: account.sourceID, kind: .series, providerID: series.id)
+    }
+
+    var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Search spans the whole catalog, not the section being viewed.
+    var searchResults: [SeriesSummary] {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return [] }
+        return seriesList.filter { $0.title.localizedCaseInsensitiveContains(query) }
+    }
+
+    var sections: [CatalogSection] {
+        [.all(title: "All Series"), .favorites, .history] + categories.map { .category(id: $0.id, name: $0.name) }
+    }
+
+    func series(in section: CatalogSection) -> [SeriesSummary] {
+        switch section {
+        case .all:
+            return seriesList
+        case .favorites:
+            return seriesList.filter { favoriteKeys.contains(contentKey(for: $0)) }
+        case .history:
+            let byID = Dictionary(seriesList.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return historyIDs.compactMap { byID[$0] }
+        case .category(let id, _):
+            return seriesList.filter { $0.categoryID == id }
         }
+    }
+
+    func seriesCount(in section: CatalogSection) -> Int {
+        series(in: section).count
+    }
+
+    @MainActor
+    func loadFavorites(modelContext: ModelContext) {
+        guard let favorites = try? modelContext.fetch(FetchDescriptor<Favorite>()) else { return }
+        favoriteKeys = Set(favorites.map(\.contentKey))
+    }
+
+    @MainActor
+    func loadHistory(modelContext: ModelContext) {
+        var descriptor = FetchDescriptor<TVSeries>(
+            predicate: #Predicate { $0.lastPlayedAt != nil },
+            sortBy: [SortDescriptor(\.lastPlayedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = Self.historyLimit
+        guard let rows = try? modelContext.fetch(descriptor) else { return }
+        let prefix = "\(account.sourceID)|series|"
+        historyIDs = rows.filter { $0.contentKey.hasPrefix(prefix) }.map(\.providerID)
     }
 
     @MainActor
     func loadIfNeeded(modelContext: ModelContext) async {
         guard seriesList.isEmpty, !isLoading else { return }
         loadFromCache(modelContext: modelContext)
+        loadFavorites(modelContext: modelContext)
+        loadHistory(modelContext: modelContext)
         await refresh(modelContext: modelContext)
     }
 

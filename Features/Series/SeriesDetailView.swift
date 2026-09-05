@@ -93,6 +93,11 @@ struct SeriesDetailView: View {
         }
         currentlyPlayingEpisode = episode
         let key = contentKey(for: episode)
+        // Recorded against the series, not the episode — see PlaybackHistory.
+        PlaybackHistory.recordSeries(
+            contentKey: ContentKey.make(sourceID: account.sourceID, kind: .series, providerID: series.id),
+            in: modelContext
+        )
 
         // Prefer the downloaded copy when available — faster, and works offline.
         if let existing = downloadIndex()[contentKey(for: episode)],

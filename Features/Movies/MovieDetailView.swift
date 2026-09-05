@@ -158,6 +158,7 @@ struct MovieDetailView: View {
 
     private func play() {
         Haptics.light()
+        PlaybackHistory.recordMovie(contentKey: contentKey, in: modelContext)
         // Prefer the downloaded copy when available — faster, and works offline.
         if let download, download.state == .completed, let localURL = download.localFileURL {
             playbackRequest = PlaybackRequest(url: localURL, title: movie.title, contentKey: contentKey)

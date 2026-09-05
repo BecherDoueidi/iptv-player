@@ -19,6 +19,8 @@ public class Movie {
     public var containerExtension: String?
     public var categoryID: String?
     public var addedAt: Date?
+    /// Drives the History section. See PlaybackHistory for why it lives here.
+    public var lastPlayedAt: Date?
     public var lastSyncedAt: Date
 
     public init(
@@ -35,6 +37,7 @@ public class Movie {
         containerExtension: String? = nil,
         categoryID: String? = nil,
         addedAt: Date? = nil,
+        lastPlayedAt: Date? = nil,
         lastSyncedAt: Date = .now
     ) {
         self.contentKey = contentKey
@@ -50,6 +53,7 @@ public class Movie {
         self.containerExtension = containerExtension
         self.categoryID = categoryID
         self.addedAt = addedAt
+        self.lastPlayedAt = lastPlayedAt
         self.lastSyncedAt = lastSyncedAt
     }
 

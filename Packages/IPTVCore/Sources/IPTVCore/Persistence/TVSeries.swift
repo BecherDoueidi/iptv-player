@@ -19,6 +19,8 @@ public class TVSeries {
     public var genre: String?
     public var rating: Double?
     public var categoryID: String?
+    /// Drives the History section. See PlaybackHistory for why it lives here.
+    public var lastPlayedAt: Date?
     public var lastSyncedAt: Date
 
     @Relationship(deleteRule: .cascade) public var seasons: [TVSeason] = []
@@ -33,6 +35,7 @@ public class TVSeries {
         genre: String? = nil,
         rating: Double? = nil,
         categoryID: String? = nil,
+        lastPlayedAt: Date? = nil,
         lastSyncedAt: Date = .now
     ) {
         self.contentKey = contentKey
@@ -44,6 +47,7 @@ public class TVSeries {
         self.genre = genre
         self.rating = rating
         self.categoryID = categoryID
+        self.lastPlayedAt = lastPlayedAt
         self.lastSyncedAt = lastSyncedAt
     }
 

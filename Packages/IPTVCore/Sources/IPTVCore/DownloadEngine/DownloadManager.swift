@@ -20,6 +20,9 @@ public final class DownloadManager: NSObject {
     private var backgroundCompletionHandler: (() -> Void)?
     private var tasksByContentKey: [String: URLSessionDownloadTask] = [:]
     private var lastProgressSaveAt: [String: Date] = [:]
+    /// Avoids a SwiftData fetch inside `didWriteData`, which fires many times per
+    /// second — a query per callback on the main thread was starving the transfer.
+    private var downloadsByContentKey: [String: Download] = [:]
 
     // `nonisolated` so this can be constructed from AppDependencies' own nonisolated
     // init (which itself must stay nonisolated — see EnvironmentKey.defaultValue).
@@ -52,8 +55,7 @@ public final class DownloadManager: NSObject {
     public func enqueue(contentKey: String, kind: ContentKind, title: String, sourceURL: URL) throws {
         guard let modelContext else { return }
 
-        let descriptor = FetchDescriptor<Download>(predicate: #Predicate { $0.contentKey == contentKey })
-        if let existing = try? modelContext.fetch(descriptor).first,
+        if let existing = cachedDownload(forKey: contentKey),
            existing.state == .downloading || existing.state == .queued || existing.state == .completed {
             return
         }
@@ -70,6 +72,7 @@ public final class DownloadManager: NSObject {
             title: title
         )
         modelContext.insert(download)
+        downloadsByContentKey[contentKey] = download
         try? modelContext.save()
 
         startTask(for: download, url: sourceURL)
@@ -86,8 +89,7 @@ public final class DownloadManager: NSObject {
 
     public func resume(contentKey: String) {
         guard let modelContext else { return }
-        let descriptor = FetchDescriptor<Download>(predicate: #Predicate { $0.contentKey == contentKey })
-        guard let download = try? modelContext.fetch(descriptor).first else { return }
+        guard let download = cachedDownload(forKey: contentKey) else { return }
 
         let task: URLSessionDownloadTask
         if let resumeData = download.resumeData {
@@ -114,16 +116,27 @@ public final class DownloadManager: NSObject {
         tasksByContentKey[contentKey]?.cancel()
         tasksByContentKey[contentKey] = nil
 
-        let descriptor = FetchDescriptor<Download>(predicate: #Predicate { $0.contentKey == contentKey })
-        guard let download = try? modelContext.fetch(descriptor).first else { return }
+        guard let download = cachedDownload(forKey: contentKey) else { return }
         if let fileURL = download.localFileURL {
             try? FileManager.default.removeItem(at: fileURL)
         }
+        downloadsByContentKey[contentKey] = nil
+        lastProgressSaveAt[contentKey] = nil
         modelContext.delete(download)
         try? modelContext.save()
     }
 
     // MARK: - Private
+
+    /// Cached lookup — only falls back to a query the first time a key is seen.
+    private func cachedDownload(forKey key: String) -> Download? {
+        if let cached = downloadsByContentKey[key] { return cached }
+        guard let modelContext else { return nil }
+        let descriptor = FetchDescriptor<Download>(predicate: #Predicate { $0.contentKey == key })
+        guard let found = try? modelContext.fetch(descriptor).first else { return nil }
+        downloadsByContentKey[key] = found
+        return found
+    }
 
     private func startTask(for download: Download, url: URL) {
         let task = session.downloadTask(with: url)
@@ -137,8 +150,7 @@ public final class DownloadManager: NSObject {
     private func applyPause(contentKey: String, resumeData: Data?) {
         tasksByContentKey[contentKey] = nil
         guard let modelContext else { return }
-        let descriptor = FetchDescriptor<Download>(predicate: #Predicate { $0.contentKey == contentKey })
-        guard let download = try? modelContext.fetch(descriptor).first else { return }
+        guard let download = cachedDownload(forKey: contentKey) else { return }
         download.resumeData = resumeData
         download.state = .paused
         try? modelContext.save()
@@ -167,6 +179,7 @@ public final class DownloadManager: NSObject {
 
         guard let downloads = try? modelContext.fetch(FetchDescriptor<Download>()) else { return }
         for download in downloads {
+            downloadsByContentKey[download.contentKey] = download
             if let task = liveByKey[download.contentKey] {
                 tasksByContentKey[download.contentKey] = task
                 continue
@@ -209,8 +222,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
     ) {
         MainActor.assumeIsolated {
             guard let contentKey = downloadTask.taskDescription, let modelContext else { return }
-            let descriptor = FetchDescriptor<Download>(predicate: #Predicate { $0.contentKey == contentKey })
-            guard let download = try? modelContext.fetch(descriptor).first else { return }
+            guard let download = cachedDownload(forKey: contentKey) else { return }
 
             let ext = URL(string: download.sourceStreamURLString)?.pathExtension
             let safeExt = (ext?.isEmpty == false) ? ext! : "mp4"
@@ -255,21 +267,22 @@ extension DownloadManager: URLSessionDownloadDelegate {
     ) {
         MainActor.assumeIsolated {
             guard let contentKey = downloadTask.taskDescription, let modelContext else { return }
-            let descriptor = FetchDescriptor<Download>(predicate: #Predicate { $0.contentKey == contentKey })
-            guard let download = try? modelContext.fetch(descriptor).first else { return }
 
-            download.bytesReceived = totalBytesWritten
-            if totalBytesExpectedToWrite > 0 {
-                download.bytesExpected = totalBytesExpectedToWrite
-            }
-
-            // Throttle persistence writes — the in-memory @Model mutation above already
-            // updates any observing UI immediately; saving every tick would hammer disk I/O.
+            // Throttle the *model mutation itself*, not just the save. This fires many
+            // times per second, and every mutation makes SwiftData notify each @Query
+            // observing Download — which re-renders whole episode lists on the main
+            // thread, starving the very delegate callbacks driving the transfer.
+            // Once per second is plenty for a progress bar.
             let now = Date()
-            if lastProgressSaveAt[contentKey].map({ now.timeIntervalSince($0) > 2 }) ?? true {
-                lastProgressSaveAt[contentKey] = now
-                try? modelContext.save()
-            }
+            guard lastProgressSaveAt[contentKey].map({ now.timeIntervalSince($0) >= 1 }) ?? true else { return }
+            lastProgressSaveAt[contentKey] = now
+
+            guard let download = cachedDownload(forKey: contentKey) else { return }
+            download.bytesReceived = totalBytesWritten
+            // Stays 0 when the server sends no Content-Length, which the UI renders as
+            // an indeterminate bar rather than a progress bar frozen at 0%.
+            download.bytesExpected = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : 0
+            try? modelContext.save()
         }
     }
 
@@ -280,8 +293,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
             if nsError.code == NSURLErrorCancelled {
                 return // explicit pause/cancel already handled its own state transition
             }
-            let descriptor = FetchDescriptor<Download>(predicate: #Predicate { $0.contentKey == contentKey })
-            guard let download = try? modelContext.fetch(descriptor).first else { return }
+            guard let download = cachedDownload(forKey: contentKey) else { return }
             if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
                 download.resumeData = resumeData
             }

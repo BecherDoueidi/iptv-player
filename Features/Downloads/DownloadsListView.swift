@@ -64,10 +64,19 @@ private struct DownloadRow: View {
 
             switch download.state {
             case .downloading:
-                ProgressView(value: progressFraction)
-                Text("\(formattedBytes(download.bytesReceived)) / \(formattedBytes(download.bytesExpected))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if download.bytesExpected > 0 {
+                    ProgressView(value: progressFraction)
+                    Text("\(formattedBytes(download.bytesReceived)) / \(formattedBytes(download.bytesExpected))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    // No Content-Length from the server — an indeterminate bar is
+                    // honest here, where a 0%-forever progress bar looks broken.
+                    ProgressView()
+                    Text("\(formattedBytes(download.bytesReceived)) downloaded")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             case .paused:
                 Text("Paused — \(formattedBytes(download.bytesReceived)) downloaded")
                     .font(.caption)

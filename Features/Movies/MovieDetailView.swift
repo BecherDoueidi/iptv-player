@@ -74,8 +74,12 @@ struct MovieDetailView: View {
                 .buttonStyle(.bordered)
                 .disabled(credentials == nil || download?.state == .completed || download?.state == .downloading)
 
-                if download?.state == .downloading {
-                    ProgressView(value: downloadProgress)
+                if let download, download.state == .downloading {
+                    if download.bytesExpected > 0 {
+                        ProgressView(value: downloadProgress)
+                    } else {
+                        ProgressView()
+                    }
                 }
 
                 LibraryControlsView(contentKey: contentKey, kind: .movie, title: movie.title, posterURL: movie.posterURL)
@@ -115,7 +119,9 @@ struct MovieDetailView: View {
     private var downloadButtonTitle: String {
         switch download?.state {
         case .completed: return "Downloaded"
-        case .downloading: return "Downloading \(Int(downloadProgress * 100))%"
+        case .downloading:
+            guard let download, download.bytesExpected > 0 else { return "Downloading…" }
+            return "Downloading \(Int(downloadProgress * 100))%"
         case .queued: return "Queued"
         case .paused: return "Paused — Resume"
         case .failed: return "Retry Download"

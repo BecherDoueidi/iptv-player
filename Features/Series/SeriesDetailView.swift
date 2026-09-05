@@ -95,7 +95,8 @@ struct SeriesDetailView: View {
         let key = contentKey(for: episode)
 
         // Prefer the downloaded copy when available — faster, and works offline.
-        if let existing = download(for: episode), existing.state == .completed, let localURL = existing.localFileURL {
+        if let existing = downloadIndex()[contentKey(for: episode)],
+           existing.state == .completed, let localURL = existing.localFileURL {
             playbackRequest = PlaybackRequest(url: localURL, title: episode.title, contentKey: key)
             return
         }
@@ -126,13 +127,16 @@ struct SeriesDetailView: View {
         play(next)
     }
 
-    private func download(for episode: SeriesEpisode) -> Download? {
-        let key = contentKey(for: episode)
-        return allDownloads.first { $0.contentKey == key }
+    private func downloadIndex() -> [String: Download] {
+        Dictionary(allDownloads.map { ($0.contentKey, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    private func downloadIconName(for episode: SeriesEpisode) -> String {
-        switch download(for: episode)?.state {
+    private func download(for episode: SeriesEpisode, in index: [String: Download]) -> Download? {
+        index[contentKey(for: episode)]
+    }
+
+    private func downloadIconName(for episode: SeriesEpisode, in index: [String: Download]) -> String {
+        switch download(for: episode, in: index)?.state {
         case .completed: return "checkmark.circle.fill"
         case .downloading: return "arrow.down.circle.fill"
         case .failed: return "exclamationmark.circle"
@@ -143,7 +147,8 @@ struct SeriesDetailView: View {
 
     private func downloadAction(for episode: SeriesEpisode) {
         guard let credentials else { return }
-        if let existing = download(for: episode), existing.state == .failed || existing.state == .paused {
+        if let existing = downloadIndex()[contentKey(for: episode)],
+           existing.state == .failed || existing.state == .paused {
             dependencies.downloadManager.resume(contentKey: existing.contentKey)
             return
         }
@@ -177,6 +182,9 @@ struct SeriesDetailView: View {
 
     private var episodeList: some View {
         let episodes = viewModel.seasons.first { $0.seasonNumber == viewModel.selectedSeasonNumber }?.episodes ?? []
+        // Indexed once per render — this was a linear scan over all downloads,
+        // repeated several times per episode row, on every progress update.
+        let index = downloadIndex()
         return VStack(alignment: .leading, spacing: 8) {
             ForEach(episodes) { episode in
                 HStack {
@@ -193,18 +201,18 @@ struct SeriesDetailView: View {
                         }
                     }
                     .buttonStyle(.plain)
-                    .disabled(credentials == nil && download(for: episode)?.state != .completed)
+                    .disabled(credentials == nil && download(for: episode, in: index)?.state != .completed)
 
                     Spacer()
 
                     Button {
                         downloadAction(for: episode)
                     } label: {
-                        Image(systemName: downloadIconName(for: episode))
+                        Image(systemName: downloadIconName(for: episode, in: index))
                     }
                     .buttonStyle(.borderless)
-                    .disabled(credentials == nil || download(for: episode)?.state == .completed
-                        || download(for: episode)?.state == .downloading)
+                    .disabled(credentials == nil || download(for: episode, in: index)?.state == .completed
+                        || download(for: episode, in: index)?.state == .downloading)
                 }
                 .padding(.vertical, 4)
                 Divider()

@@ -32,6 +32,7 @@ struct MoviesListView: View {
                     ContentUnavailableView("No movies found", systemImage: "film")
                 } else {
                     ScrollView {
+                        continueWatchingSection
                         categoryPicker
                         LazyVGrid(columns: columns, spacing: 16) {
                             ForEach(viewModel.filteredMovies) { movie in
@@ -48,7 +49,7 @@ struct MoviesListView: View {
             .navigationTitle("Movies")
             .searchable(text: $viewModel.searchText)
             .navigationDestination(for: MovieSummary.self) { movie in
-                MovieDetailView(movie: movie, dependencies: dependencies)
+                MovieDetailView(movie: movie, account: account, dependencies: dependencies)
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -58,9 +59,37 @@ struct MoviesListView: View {
             .task {
                 await viewModel.loadIfNeeded(modelContext: modelContext)
             }
+            .onAppear {
+                viewModel.loadContinueWatching(modelContext: modelContext)
+            }
             .refreshable {
                 await viewModel.refresh(modelContext: modelContext)
+                viewModel.loadContinueWatching(modelContext: modelContext)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var continueWatchingSection: some View {
+        if !viewModel.continueWatching.isEmpty {
+            VStack(alignment: .leading) {
+                Text("Continue Watching")
+                    .font(.headline)
+                    .padding(.horizontal)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(viewModel.continueWatching) { movie in
+                            NavigationLink(value: movie) {
+                                MoviePosterCell(movie: movie)
+                                    .frame(width: 110)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+            }
+            .padding(.top, 8)
         }
     }
 

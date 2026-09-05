@@ -11,6 +11,7 @@ struct SeriesDetailView: View {
     @State private var viewModel: SeriesDetailViewModel
     @State private var credentials: XtreamCredentials?
     @State private var playbackRequest: PlaybackRequest?
+    @State private var currentlyPlayingEpisode: SeriesEpisode?
 
     init(series: SeriesSummary, account: ProviderAccount, dependencies: AppDependencies) {
         self.series = series
@@ -62,12 +63,16 @@ struct SeriesDetailView: View {
         .navigationTitle(series.title)
         .navigationBarTitleDisplayMode(.inline)
         .fullScreenCover(item: $playbackRequest) { request in
-            PlayerScreen(request: request)
+            PlayerScreen(request: request, onRequestNextEpisode: playNextEpisodeIfAvailable)
         }
         .task {
             credentials = try? dependencies.credentialStore.loadCredentials()
             await viewModel.loadIfNeeded(modelContext: modelContext)
         }
+    }
+
+    private func contentKey(for episode: SeriesEpisode) -> String {
+        ContentKey.make(sourceID: account.sourceID, kind: .episode, providerID: episode.id)
     }
 
     private func play(_ episode: SeriesEpisode) {
@@ -78,7 +83,24 @@ struct SeriesDetailView: View {
                 containerExtension: episode.containerExtension
               )
         else { return }
-        playbackRequest = PlaybackRequest(url: url, title: episode.title)
+        currentlyPlayingEpisode = episode
+        playbackRequest = PlaybackRequest(url: url, title: episode.title, contentKey: contentKey(for: episode))
+    }
+
+    /// Next episode in the same season, or the first episode of the next season.
+    private func nextEpisode(after episode: SeriesEpisode) -> SeriesEpisode? {
+        guard let season = viewModel.seasons.first(where: { $0.seasonNumber == episode.seasonNumber }) else {
+            return nil
+        }
+        if let index = season.episodes.firstIndex(where: { $0.id == episode.id }), index + 1 < season.episodes.count {
+            return season.episodes[index + 1]
+        }
+        return viewModel.seasons.first { $0.seasonNumber == episode.seasonNumber + 1 }?.episodes.first
+    }
+
+    private func playNextEpisodeIfAvailable() {
+        guard let current = currentlyPlayingEpisode, let next = nextEpisode(after: current) else { return }
+        play(next)
     }
 
     private var seasonPicker: some View {

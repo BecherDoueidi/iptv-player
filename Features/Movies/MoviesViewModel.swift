@@ -7,6 +7,7 @@ import IPTVCore
 final class MoviesViewModel {
     private(set) var categories: [MediaCategory] = []
     private(set) var movies: [MovieSummary] = []
+    private(set) var continueWatching: [MovieSummary] = []
     private(set) var isLoading = false
     private(set) var errorMessage: String?
     var selectedCategoryID: String?
@@ -59,6 +60,37 @@ final class MoviesViewModel {
         } catch {
             errorMessage = Self.errorMessage(for: error)
         }
+    }
+
+    /// Movies-only for now (episodes have their own progress rows too, but a unified
+    /// cross-media Continue Watching row is deferred to a later polish pass — this
+    /// still satisfies "most-recent-incomplete first" ordering for the Movies tab).
+    @MainActor
+    func loadContinueWatching(modelContext: ModelContext) {
+        let progressDescriptor = FetchDescriptor<WatchProgress>(
+            predicate: #Predicate { !$0.isCompleted },
+            sortBy: [SortDescriptor(\.lastPlayedAt, order: .reverse)]
+        )
+        guard let allProgress = try? modelContext.fetch(progressDescriptor) else { return }
+
+        let prefix = "\(account.sourceID)|movie|"
+        let relevant = allProgress.filter { $0.contentKey.hasPrefix(prefix) }
+
+        guard let allMovies = try? modelContext.fetch(FetchDescriptor<Movie>()) else { return }
+        let movieByKey = Dictionary(uniqueKeysWithValues: allMovies.map { ($0.contentKey, $0) })
+
+        continueWatching = Array(relevant.compactMap { progress -> MovieSummary? in
+            guard let movie = movieByKey[progress.contentKey] else { return nil }
+            return MovieSummary(
+                id: movie.providerID,
+                categoryID: movie.categoryID,
+                title: movie.title,
+                posterURL: movie.posterURL,
+                containerExtension: movie.containerExtension,
+                rating: movie.rating,
+                addedAt: movie.addedAt
+            )
+        }.prefix(10))
     }
 
     private func persist(_ summaries: [MovieSummary], modelContext: ModelContext) {

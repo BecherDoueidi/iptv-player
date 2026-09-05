@@ -1,15 +1,23 @@
 import SwiftUI
+import SwiftData
 import IPTVCore
 
 struct MovieDetailView: View {
     let movie: MovieSummary
+    let account: ProviderAccount
     let dependencies: AppDependencies
 
+    @Environment(\.modelContext) private var modelContext
     @State private var detail: MovieDetail?
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var credentials: XtreamCredentials?
     @State private var playbackRequest: PlaybackRequest?
+    @State private var resumePositionSeconds: TimeInterval?
+
+    private var contentKey: String {
+        ContentKey.make(sourceID: account.sourceID, kind: .movie, providerID: movie.id)
+    }
 
     var body: some View {
         ScrollView {
@@ -41,7 +49,7 @@ struct MovieDetailView: View {
                 Button {
                     play()
                 } label: {
-                    Label("Play", systemImage: "play.fill")
+                    Label(playButtonTitle, systemImage: "play.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -64,7 +72,23 @@ struct MovieDetailView: View {
         }
         .task {
             credentials = try? dependencies.credentialStore.loadCredentials()
+            loadResumePosition()
             await loadDetail()
+        }
+    }
+
+    private var playButtonTitle: String {
+        guard let resumePositionSeconds else { return "Play" }
+        let minutes = Int(resumePositionSeconds) / 60
+        let seconds = Int(resumePositionSeconds) % 60
+        return String(format: "Resume at %d:%02d", minutes, seconds)
+    }
+
+    private func loadResumePosition() {
+        let key = contentKey
+        let descriptor = FetchDescriptor<WatchProgress>(predicate: #Predicate { $0.contentKey == key })
+        if let progress = try? modelContext.fetch(descriptor).first, !progress.isCompleted, progress.positionSeconds > 5 {
+            resumePositionSeconds = progress.positionSeconds
         }
     }
 
@@ -90,6 +114,6 @@ struct MovieDetailView: View {
                 containerExtension: movie.containerExtension
               )
         else { return }
-        playbackRequest = PlaybackRequest(url: url, title: movie.title)
+        playbackRequest = PlaybackRequest(url: url, title: movie.title, contentKey: contentKey)
     }
 }

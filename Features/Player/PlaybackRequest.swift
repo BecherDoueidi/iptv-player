@@ -5,4 +5,5 @@ struct PlaybackRequest: Identifiable {
     let id = UUID()
     let url: URL
     let title: String
+    let contentKey: String
 }

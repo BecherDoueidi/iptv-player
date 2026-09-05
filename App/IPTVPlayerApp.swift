@@ -9,6 +9,9 @@ struct IPTVPlayerApp: App {
         WindowGroup {
             RootView()
                 .environment(\.appDependencies, dependencies)
+                .task {
+                    dependencies.configureDownloadManagerIfNeeded()
+                }
         }
         .modelContainer(dependencies.modelContainer)
     }

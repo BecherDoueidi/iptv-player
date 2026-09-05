@@ -33,8 +33,16 @@ final class AppDependencies {
         }
 
         downloadManager = DownloadManager()
-        downloadManager.configure(modelContext: modelContainer.mainContext)
         AppDelegate.downloadManager = downloadManager
+    }
+
+    /// `configure` touches `ModelContainer.mainContext`, which is main-actor-isolated —
+    /// this can't run inside `init()` itself (AppDependencies.init() must stay
+    /// nonisolated so `EnvironmentKey.defaultValue` below can construct it). Called once
+    /// from IPTVPlayerApp's `.task` instead, which does run on the main actor.
+    @MainActor
+    func configureDownloadManagerIfNeeded() {
+        downloadManager.configure(modelContext: modelContainer.mainContext)
     }
 }
 

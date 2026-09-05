@@ -21,7 +21,11 @@ public final class DownloadManager: NSObject {
     private var tasksByContentKey: [String: URLSessionDownloadTask] = [:]
     private var lastProgressSaveAt: [String: Date] = [:]
 
-    public override init() {
+    // `nonisolated` so this can be constructed from AppDependencies' own nonisolated
+    // init (which itself must stay nonisolated — see EnvironmentKey.defaultValue).
+    // Legal here because initial stored-property assignment is exempt from actor
+    // isolation checks; nothing in this init reads previously-isolated state.
+    public nonisolated override init() {
         super.init()
         let config = URLSessionConfiguration.background(withIdentifier: Self.backgroundSessionIdentifier)
         config.isDiscretionary = false

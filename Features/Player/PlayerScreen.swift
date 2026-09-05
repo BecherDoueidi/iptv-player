@@ -13,6 +13,8 @@ struct PlayerScreen: View {
     @AppStorage("autoplayNextEpisode") private var autoplayNextEpisode = false
     @State private var showNextEpisodePrompt = false
     @State private var playbackErrorMessage: String?
+    @State private var closeButtonVisible = true
+    @State private var hideCloseButtonTask: Task<Void, Never>?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -27,14 +29,17 @@ struct PlayerScreen: View {
             )
             .ignoresSafeArea()
 
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title)
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(.white, .black.opacity(0.6))
-                    .padding()
+            if closeButtonVisible {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .black.opacity(0.6))
+                        .padding()
+                }
+                .transition(.opacity)
             }
 
             if let playbackErrorMessage {
@@ -48,6 +53,11 @@ struct PlayerScreen: View {
                     Text(playbackErrorMessage)
                         .font(.footnote)
                         .foregroundStyle(.white.opacity(0.85))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                    Text(redactedURLDescription)
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.5))
                         .multilineTextAlignment(.center)
                         .padding(.horizontal)
                     Button("Close") { dismiss() }
@@ -76,6 +86,48 @@ struct PlayerScreen: View {
                 }
             }
         }
+        // `.simultaneousGesture` (not `.onTapGesture`) so this doesn't steal the tap
+        // from AVPlayerViewController's own tap-to-reveal-controls gesture underneath —
+        // both fire together.
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    closeButtonVisible.toggle()
+                }
+                scheduleAutoHideCloseButton()
+            }
+        )
+        .onAppear {
+            scheduleAutoHideCloseButton()
+        }
+    }
+
+    private func scheduleAutoHideCloseButton() {
+        hideCloseButtonTask?.cancel()
+        guard closeButtonVisible else { return }
+        hideCloseButtonTask = Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                closeButtonVisible = false
+            }
+        }
+    }
+
+    /// Host + path with the username/password path segments blanked out — shown in
+    /// the error overlay so a "cannot open" failure is actually diagnosable instead
+    /// of a dead end.
+    private var redactedURLDescription: String {
+        guard var components = URLComponents(url: request.url, resolvingAgainstBaseURL: false) else {
+            return request.url.absoluteString
+        }
+        var segments = components.path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        if segments.count >= 4 {
+            segments[2] = "***"
+            segments[3] = "***"
+        }
+        components.path = segments.joined(separator: "/")
+        return components.url?.absoluteString ?? request.url.absoluteString
     }
 
     private func resumePosition() -> TimeInterval {

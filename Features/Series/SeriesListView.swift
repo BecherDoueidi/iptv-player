@@ -50,11 +50,6 @@ struct SeriesListView: View {
             .navigationDestination(for: SeriesSummary.self) { series in
                 SeriesDetailView(series: series, account: account, dependencies: dependencies)
             }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Sign Out", role: .destructive, action: signOut)
-                }
-            }
             .task {
                 await viewModel.loadIfNeeded(modelContext: modelContext)
             }
@@ -95,11 +90,6 @@ struct SeriesListView: View {
         }
     }
 
-    private func signOut() {
-        try? dependencies.credentialStore.clear()
-        modelContext.delete(account)
-        try? modelContext.save()
-    }
 }
 
 private struct SeriesPosterCell: View {

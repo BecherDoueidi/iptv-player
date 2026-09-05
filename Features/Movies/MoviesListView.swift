@@ -51,11 +51,6 @@ struct MoviesListView: View {
             .navigationDestination(for: MovieSummary.self) { movie in
                 MovieDetailView(movie: movie, account: account, dependencies: dependencies)
             }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Sign Out", role: .destructive, action: signOut)
-                }
-            }
             .task {
                 await viewModel.loadIfNeeded(modelContext: modelContext)
             }
@@ -124,11 +119,6 @@ struct MoviesListView: View {
         }
     }
 
-    private func signOut() {
-        try? dependencies.credentialStore.clear()
-        modelContext.delete(account)
-        try? modelContext.save()
-    }
 }
 
 private struct MoviePosterCell: View {

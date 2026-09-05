@@ -10,6 +10,7 @@ struct PlayerScreen: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @AppStorage("autoplayNextEpisode") private var autoplayNextEpisode = false
     @State private var showNextEpisodePrompt = false
 
     var body: some View {
@@ -83,7 +84,10 @@ struct PlayerScreen: View {
     }
 
     private func handleFinished() {
-        if onRequestNextEpisode != nil {
+        guard let onRequestNextEpisode else { return }
+        if autoplayNextEpisode {
+            onRequestNextEpisode()
+        } else {
             showNextEpisodePrompt = true
         }
     }

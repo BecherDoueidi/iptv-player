@@ -31,6 +31,7 @@ struct RootView: View {
             }
         }
         .preferredColorScheme(AppearanceOption(rawValue: appearanceRaw)?.colorScheme)
+        .keepsDownloadsRunning()
     }
 }
 

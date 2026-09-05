@@ -15,6 +15,8 @@ struct RootView: View {
                         .tabItem { Label("Movies", systemImage: "film") }
                     SeriesListView(account: account, dependencies: dependencies)
                         .tabItem { Label("Series", systemImage: "tv") }
+                    LiveTVView(account: account, dependencies: dependencies)
+                        .tabItem { Label("Live TV", systemImage: "antenna.radiowaves.left.and.right") }
                     SearchView(account: account, dependencies: dependencies)
                         .tabItem { Label("Search", systemImage: "magnifyingglass") }
                     LibraryView(account: account, dependencies: dependencies)

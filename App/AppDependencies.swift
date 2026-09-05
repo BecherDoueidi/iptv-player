@@ -19,7 +19,7 @@ final class AppDependencies {
         let schemaTypes: [any PersistentModel.Type] = [
             ProviderAccount.self, Movie.self, TVSeries.self, TVSeason.self,
             TVEpisode.self, WatchProgress.self, Download.self, Favorite.self,
-            Rating.self, MediaCollection.self
+            Rating.self, MediaCollection.self, LiveChannel.self
         ]
         if let container = try? ModelContainer(for: Schema(schemaTypes)) {
             modelContainer = container

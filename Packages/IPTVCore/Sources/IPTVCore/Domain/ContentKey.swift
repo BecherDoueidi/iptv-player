@@ -5,6 +5,7 @@ public enum ContentKind: String {
     case series
     case season
     case episode
+    case live
 }
 
 /// `sourceID|kind|providerID` — the soft foreign key joining every local

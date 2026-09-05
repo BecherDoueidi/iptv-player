@@ -62,6 +62,28 @@ actor XtreamAPIClient {
         ])
     }
 
+    func fetchLiveCategories(credentials: XtreamCredentials) async throws -> [XtreamCategoryDTO] {
+        try await fetch(
+            credentials: credentials,
+            extraQueryItems: [URLQueryItem(name: "action", value: "get_live_categories")]
+        )
+    }
+
+    func fetchLiveStreams(credentials: XtreamCredentials, categoryID: String?) async throws -> [XtreamLiveStreamDTO] {
+        var items = [URLQueryItem(name: "action", value: "get_live_streams")]
+        if let categoryID {
+            items.append(URLQueryItem(name: "category_id", value: categoryID))
+        }
+        return try await fetch(credentials: credentials, extraQueryItems: items)
+    }
+
+    func fetchShortEPG(credentials: XtreamCredentials, channelID: String) async throws -> XtreamShortEPGResponseDTO {
+        try await fetch(credentials: credentials, extraQueryItems: [
+            URLQueryItem(name: "action", value: "get_short_epg"),
+            URLQueryItem(name: "stream_id", value: channelID)
+        ])
+    }
+
     private func fetch<T: Decodable>(credentials: XtreamCredentials, extraQueryItems: [URLQueryItem]) async throws -> T {
         let url = try Self.playerAPIURL(credentials: credentials, extraQueryItems: extraQueryItems)
 

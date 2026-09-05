@@ -50,10 +50,12 @@ struct PlayerScreen: View {
         }
         .task {
             controller.onProgress = { position, duration in
+                // A live stream has no position worth remembering.
+                guard !request.isLive else { return }
                 saveProgress(position: position, duration: duration)
             }
             controller.onFinished = { handleFinished() }
-            controller.start(url: request.url, resumeAt: resumePosition())
+            controller.start(url: request.url, resumeAt: request.isLive ? 0 : resumePosition())
             scheduleAutoHide()
         }
         .onDisappear {
@@ -93,11 +95,13 @@ struct PlayerScreen: View {
             Spacer()
 
             HStack(spacing: 44) {
-                Button {
-                    controller.skip(by: -10)
-                    scheduleAutoHide()
-                } label: {
-                    Image(systemName: "gobackward.10").font(.system(size: 32))
+                if !request.isLive {
+                    Button {
+                        controller.skip(by: -10)
+                        scheduleAutoHide()
+                    } label: {
+                        Image(systemName: "gobackward.10").font(.system(size: 32))
+                    }
                 }
 
                 Button {
@@ -108,17 +112,22 @@ struct PlayerScreen: View {
                         .font(.system(size: 44))
                 }
 
-                Button {
-                    controller.skip(by: 10)
-                    scheduleAutoHide()
-                } label: {
-                    Image(systemName: "goforward.10").font(.system(size: 32))
+                if !request.isLive {
+                    Button {
+                        controller.skip(by: 10)
+                        scheduleAutoHide()
+                    } label: {
+                        Image(systemName: "goforward.10").font(.system(size: 32))
+                    }
                 }
             }
             .foregroundStyle(.white)
 
             Spacer()
 
+            if request.isLive {
+                liveIndicator
+            } else {
             VStack(spacing: 2) {
                 Slider(
                     value: Binding(
@@ -151,6 +160,7 @@ struct PlayerScreen: View {
             }
             .padding(.horizontal)
             .padding(.bottom, 8)
+            }
         }
         .background(
             LinearGradient(
@@ -161,6 +171,14 @@ struct PlayerScreen: View {
             .ignoresSafeArea()
             .allowsHitTesting(false)
         )
+    }
+
+    private var liveIndicator: some View {
+        HStack(spacing: 6) {
+            Circle().fill(.red).frame(width: 8, height: 8)
+            Text("LIVE").font(.caption).bold().foregroundStyle(.white)
+        }
+        .padding(.bottom, 12)
     }
 
     private func errorOverlay(_ message: String) -> some View {

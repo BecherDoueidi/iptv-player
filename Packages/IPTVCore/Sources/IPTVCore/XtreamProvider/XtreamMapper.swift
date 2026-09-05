@@ -43,6 +43,36 @@ enum XtreamMapper {
         }
     }
 
+    static func makeLiveChannels(from dtos: [XtreamLiveStreamDTO]) -> [LiveChannelSummary] {
+        dtos.compactMap { dto in
+            guard let id = dto.streamID, let name = dto.name else { return nil }
+            return LiveChannelSummary(
+                id: id,
+                categoryID: dto.categoryID,
+                name: name,
+                logoURL: dto.streamIcon.flatMap(URL.init(string:)),
+                number: dto.number,
+                // Panels send an empty string rather than omitting the field when a
+                // channel has no EPG mapping.
+                epgChannelID: dto.epgChannelID?.isEmpty == false ? dto.epgChannelID : nil
+            )
+        }
+    }
+
+    static func makeEPGEntries(from response: XtreamShortEPGResponseDTO) -> [EPGEntry] {
+        response.listings.enumerated().compactMap { index, dto in
+            guard let title = dto.title, !title.isEmpty else { return nil }
+            return EPGEntry(
+                id: dto.id ?? "listing-\(index)",
+                title: title,
+                description: dto.description?.isEmpty == false ? dto.description : nil,
+                startsAt: dto.startsAt,
+                endsAt: dto.endsAt
+            )
+        }
+        .sorted { ($0.startsAt ?? .distantPast) < ($1.startsAt ?? .distantPast) }
+    }
+
     static func makeSeriesSummaries(from dtos: [XtreamSeriesDTO]) -> [SeriesSummary] {
         dtos.compactMap { dto in
             guard let id = dto.seriesID, let title = dto.name else { return nil }

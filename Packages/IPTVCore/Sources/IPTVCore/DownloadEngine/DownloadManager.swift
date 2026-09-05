@@ -26,7 +26,8 @@ public final class DownloadManager: NSObject {
     /// A run of attempts that transfer nothing at all is the real "can't download this"
     /// signal; any single one of them could just be a transient network drop.
     private static let maximumEmptyAttempts = 6
-    private static let reconnectDelaySeconds: Double = 3
+    private static let reconnectDelaySeconds: Double = 0.75
+    private static let emptyAttemptBackoffSeconds: Double = 3
     /// Sent because some panels truncate or refuse transfers for unrecognised clients.
     private static let playerUserAgent = "VLC/3.0.20 LibVLC/3.0.20"
     /// Statuses these panels return when they're temporarily unwilling rather than
@@ -504,7 +505,14 @@ private extension DownloadManager {
         // the socket we just lost may not be released server-side yet, and the panel
         // answers the replacement request with a bare 404. Backing off — harder after
         // an attempt that transferred nothing — gives it time to let go.
-        let delay = madeProgress ? Self.reconnectDelaySeconds : Self.reconnectDelaySeconds * Double(barren + 1)
+        // A drop right after a healthy chunk is this server's normal behaviour and needs
+        // only a brief pause for the socket to be released — waiting the full backoff
+        // there added minutes of dead time across the ~90 reconnects one file takes.
+        // The long backoff is for attempts that transferred nothing, where the account's
+        // connection cap is the likely cause.
+        let delay = madeProgress
+            ? Self.reconnectDelaySeconds
+            : Self.emptyAttemptBackoffSeconds * Double(barren)
         download.lastError = "\(underlyingError ?? "Connection dropped") Reconnecting (\(attempts))…"
         download.state = .downloading
         try? modelContext?.save()

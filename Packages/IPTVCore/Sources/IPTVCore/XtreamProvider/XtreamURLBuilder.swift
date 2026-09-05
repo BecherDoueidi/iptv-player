@@ -13,6 +13,13 @@ enum XtreamURLBuilder {
         buildStreamURL(credentials: credentials, kind: "series", id: episodeID, containerExtension: containerExtension)
     }
 
+    /// Live channels are served as MPEG-TS at `/live/{user}/{pass}/{id}.ts`. TS rather
+    /// than the panel's `.m3u8` alternative because VLC handles the raw transport
+    /// stream directly and it starts noticeably faster than an HLS playlist.
+    static func liveStreamURL(credentials: XtreamCredentials, channelID: String) -> URL? {
+        buildStreamURL(credentials: credentials, kind: "live", id: channelID, containerExtension: "ts")
+    }
+
     private static func buildStreamURL(
         credentials: XtreamCredentials,
         kind: String,

@@ -42,6 +42,25 @@ public final class XtreamProvider: MediaProvider {
         return XtreamMapper.makeSeriesDetail(id: seriesID, from: response)
     }
 
+    public func fetchLiveCategories(credentials: XtreamCredentials) async throws -> [MediaCategory] {
+        let dtos = try await apiClient.fetchLiveCategories(credentials: credentials)
+        return XtreamMapper.makeCategories(from: dtos)
+    }
+
+    public func fetchLiveChannels(credentials: XtreamCredentials, categoryID: String?) async throws -> [LiveChannelSummary] {
+        let dtos = try await apiClient.fetchLiveStreams(credentials: credentials, categoryID: categoryID)
+        return XtreamMapper.makeLiveChannels(from: dtos)
+    }
+
+    public func fetchShortEPG(credentials: XtreamCredentials, channelID: String) async throws -> [EPGEntry] {
+        let response = try await apiClient.fetchShortEPG(credentials: credentials, channelID: channelID)
+        return XtreamMapper.makeEPGEntries(from: response)
+    }
+
+    public func liveStreamURL(credentials: XtreamCredentials, channelID: String) -> URL? {
+        XtreamURLBuilder.liveStreamURL(credentials: credentials, channelID: channelID)
+    }
+
     public func movieStreamURL(credentials: XtreamCredentials, movieID: String, containerExtension: String?) -> URL? {
         XtreamURLBuilder.movieStreamURL(credentials: credentials, movieID: movieID, containerExtension: containerExtension)
     }

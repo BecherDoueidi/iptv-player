@@ -18,6 +18,11 @@ final class XtreamURLBuilderTests: XCTestCase {
         XCTAssertEqual(url?.absoluteString, "http://example.com:8080/series/alice/s3cret/202.mp4")
     }
 
+    func testLiveStreamURLUsesLiveConventionAndTransportStreamExtension() {
+        let url = XtreamURLBuilder.liveStreamURL(credentials: credentials, channelID: "303")
+        XCTAssertEqual(url?.absoluteString, "http://example.com:8080/live/alice/s3cret/303.ts")
+    }
+
     func testMissingContainerExtensionFallsBackToMP4() {
         let url = XtreamURLBuilder.movieStreamURL(credentials: credentials, movieID: "101", containerExtension: nil)
         XCTAssertEqual(url?.absoluteString, "http://example.com:8080/movie/alice/s3cret/101.mp4")

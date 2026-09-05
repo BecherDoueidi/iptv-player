@@ -62,6 +62,15 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
+      - name: Verify ATS exception made it into the built Info.plist
+        run: |
+          set -euo pipefail
+          APP_PATH="build/Build/Products/Release-iphoneos/IPTVPlayer.app"
+          echo "--- Full built Info.plist ---"
+          plutil -p "$APP_PATH/Info.plist"
+          echo "--- NSAppTransportSecurity only ---"
+          /usr/libexec/PlistBuddy -c "Print :NSAppTransportSecurity" "$APP_PATH/Info.plist"
+
       - name: Package .app into an .ipa (Payload/ zip)
         run: |
           set -euo pipefail

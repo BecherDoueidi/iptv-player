@@ -151,6 +151,7 @@ struct MovieDetailView: View {
     }
 
     private func play() {
+        Haptics.light()
         // Prefer the downloaded copy when available — faster, and works offline.
         if let download, download.state == .completed, let localURL = download.localFileURL {
             playbackRequest = PlaybackRequest(url: localURL, title: movie.title, contentKey: contentKey)
@@ -177,6 +178,13 @@ struct MovieDetailView: View {
             movieID: movie.id,
             containerExtension: movie.containerExtension
         ) else { return }
-        try? dependencies.downloadManager.enqueue(contentKey: contentKey, kind: .movie, title: movie.title, sourceURL: url)
+        do {
+            try dependencies.downloadManager.enqueue(contentKey: contentKey, kind: .movie, title: movie.title, sourceURL: url)
+            Haptics.success()
+        } catch DownloadError.insufficientDiskSpace {
+            errorMessage = "Not enough free storage to start this download."
+        } catch {
+            errorMessage = "Couldn't start the download."
+        }
     }
 }

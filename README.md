@@ -5,12 +5,17 @@ Xtream-Codes-compatible source. Built and sideloaded entirely for free, without
 owning a Mac. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for design details once
 later phases add it.
 
-## Status: Phase 0 — pipeline de-risking
+## Status: MVP complete (Phases 0–10)
 
-This repo currently contains only a trivial "Hello World" screen. Its entire
-purpose is to prove the zero-Mac build-and-sideload pipeline works end-to-end
-before any real feature is built. Nothing past this point should be trusted
-until that's confirmed on a real device.
+Xtream login, Movies/Series browsing (with offline fallback to cached data),
+playback via AVPlayerViewController (resume, completion tracking, autoplay-next
+prompt), a real background-capable download engine with an offline library,
+local search, favorites/ratings/collections, and a Settings screen covering
+account/playback/downloads/appearance/data management — all built and verified
+via CI on every commit. See the git history for the phase-by-phase build order.
+
+Deferred past MVP (per the original plan): the local recommendation engine,
+"What Should I Watch?", "Tonight" mode, and intro/credits-skip UI.
 
 ## How this gets built without a Mac
 

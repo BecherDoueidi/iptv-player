@@ -80,6 +80,7 @@ struct LibraryControlsView: View {
     }
 
     private func toggleFavorite() {
+        Haptics.light()
         if let existing = favoriteRows.first {
             modelContext.delete(existing)
         } else {

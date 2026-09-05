@@ -88,6 +88,9 @@ struct SeriesDetailView: View {
     }
 
     private func play(_ episode: SeriesEpisode) {
+        if currentlyPlayingEpisode?.id != episode.id {
+            Haptics.light()
+        }
         currentlyPlayingEpisode = episode
         let key = contentKey(for: episode)
 
@@ -149,12 +152,14 @@ struct SeriesDetailView: View {
             episodeID: episode.id,
             containerExtension: episode.containerExtension
         ) else { return }
-        try? dependencies.downloadManager.enqueue(
+        if (try? dependencies.downloadManager.enqueue(
             contentKey: contentKey(for: episode),
             kind: .episode,
             title: episode.title,
             sourceURL: url
-        )
+        )) != nil {
+            Haptics.success()
+        }
     }
 
     private var seasonPicker: some View {

@@ -44,6 +44,37 @@ was also named `Category`), and `Collection` would certainly collide with the
 Swift standard library's `Collection` protocol. Every model added afterward was
 named defensively to avoid the same class of bug.
 
+## Playback: VLCKit, not AVPlayer
+
+The original design chose `AVPlayerViewController` for its free PiP, AirPlay, and
+native transport chrome. That turned out to be unshippable: **AVFoundation cannot
+open Matroska (`.mkv`), AVI, or raw TS containers**, and most of a real Xtream
+catalog is MKV. On-device this surfaced as a bare "Cannot Open" — the stream URL
+was correct all along. This is precisely why SmartersPlayer and every other IPTV
+client embeds VLC.
+
+So playback runs on `VLCKitSPM` (MobileVLCKit 3.5.x) via `VLCPlaybackController`,
+with hand-built transport controls in `PlayerScreen`. Two deliberate
+risk-reduction choices, since this project has no local compiler and CI is the
+only build:
+
+- **Polling VLC's public properties on a timer** rather than conforming to
+  `VLCMediaPlayerDelegate`, whose Swift signatures vary between VLCKit versions.
+- **`as X?` casts** when reading `time`/`length`, which compile whether VLCKit's
+  ObjC headers expose those as optional, implicitly-unwrapped, or non-optional.
+
+`AVAudioSession` is configured explicitly (`.playback`) — `AVPlayerViewController`
+did that implicitly, and without it VLC's audio is silenced by the ring/silent
+switch.
+
+**Known regression:** PiP and AirPlay are gone; they came free with AVKit and VLC
+3.5 doesn't provide them. Accepted trade-off for playing the formats that actually
+exist in the catalog.
+
+CI verifies `MobileVLCKit.framework` is actually embedded in the built `.app` — a
+missing embedded framework wouldn't fail the build, it would dyld-crash on launch,
+costing a sideload and a scarce free-tier App ID slot to discover.
+
 ## Download engine
 
 `DownloadManager` (`@MainActor`) owns one background `URLSession`

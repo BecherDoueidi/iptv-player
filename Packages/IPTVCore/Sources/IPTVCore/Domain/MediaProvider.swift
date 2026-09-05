@@ -8,4 +8,7 @@ public protocol MediaProvider {
     func fetchMovieCategories(credentials: XtreamCredentials) async throws -> [MediaCategory]
     func fetchMovies(credentials: XtreamCredentials, categoryID: String?) async throws -> [MovieSummary]
     func fetchMovieDetail(credentials: XtreamCredentials, movieID: String) async throws -> MovieDetail
+    func fetchSeriesCategories(credentials: XtreamCredentials) async throws -> [MediaCategory]
+    func fetchSeries(credentials: XtreamCredentials, categoryID: String?) async throws -> [SeriesSummary]
+    func fetchSeriesDetail(credentials: XtreamCredentials, seriesID: String) async throws -> SeriesDetail
 }

@@ -8,7 +8,12 @@ struct RootView: View {
 
     var body: some View {
         if let account = accounts.first {
-            MoviesListView(account: account, dependencies: dependencies)
+            TabView {
+                MoviesListView(account: account, dependencies: dependencies)
+                    .tabItem { Label("Movies", systemImage: "film") }
+                SeriesListView(account: account, dependencies: dependencies)
+                    .tabItem { Label("Series", systemImage: "tv") }
+            }
         } else {
             LoginView(dependencies: dependencies)
         }

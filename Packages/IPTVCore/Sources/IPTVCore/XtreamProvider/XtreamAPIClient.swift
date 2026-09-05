@@ -40,6 +40,28 @@ actor XtreamAPIClient {
         ])
     }
 
+    func fetchSeriesCategories(credentials: XtreamCredentials) async throws -> [XtreamCategoryDTO] {
+        try await fetch(
+            credentials: credentials,
+            extraQueryItems: [URLQueryItem(name: "action", value: "get_series_categories")]
+        )
+    }
+
+    func fetchSeries(credentials: XtreamCredentials, categoryID: String?) async throws -> [XtreamSeriesDTO] {
+        var items = [URLQueryItem(name: "action", value: "get_series")]
+        if let categoryID {
+            items.append(URLQueryItem(name: "category_id", value: categoryID))
+        }
+        return try await fetch(credentials: credentials, extraQueryItems: items)
+    }
+
+    func fetchSeriesDetail(credentials: XtreamCredentials, seriesID: String) async throws -> XtreamSeriesInfoResponseDTO {
+        try await fetch(credentials: credentials, extraQueryItems: [
+            URLQueryItem(name: "action", value: "get_series_info"),
+            URLQueryItem(name: "series_id", value: seriesID)
+        ])
+    }
+
     private func fetch<T: Decodable>(credentials: XtreamCredentials, extraQueryItems: [URLQueryItem]) async throws -> T {
         let url = try Self.playerAPIURL(credentials: credentials, extraQueryItems: extraQueryItems)
 

@@ -43,6 +43,41 @@ enum XtreamMapper {
         }
     }
 
+    static func makeSeriesSummaries(from dtos: [XtreamSeriesDTO]) -> [SeriesSummary] {
+        dtos.compactMap { dto in
+            guard let id = dto.seriesID, let title = dto.name else { return nil }
+            return SeriesSummary(
+                id: id,
+                categoryID: dto.categoryID,
+                title: title,
+                posterURL: dto.cover.flatMap(URL.init(string:)),
+                backdropURL: dto.backdropPath?.first.flatMap(URL.init(string:)),
+                plot: dto.plot,
+                genre: dto.genre,
+                rating: dto.rating
+            )
+        }
+    }
+
+    static func makeSeriesDetail(id: String, from response: XtreamSeriesInfoResponseDTO) -> SeriesDetail {
+        let seasons: [SeriesSeason] = response.episodes.compactMap { key, episodeDTOs -> SeriesSeason? in
+            guard let seasonNumber = Int(key) else { return nil }
+            let episodes = episodeDTOs.compactMap { dto -> SeriesEpisode? in
+                guard let episodeID = dto.id, let episodeNumber = dto.episodeNum, let title = dto.title else { return nil }
+                return SeriesEpisode(
+                    id: episodeID,
+                    seasonNumber: dto.season ?? seasonNumber,
+                    episodeNumber: episodeNumber,
+                    title: title,
+                    containerExtension: dto.containerExtension
+                )
+            }.sorted { $0.episodeNumber < $1.episodeNumber }
+            return SeriesSeason(seasonNumber: seasonNumber, episodes: episodes)
+        }.sorted { $0.seasonNumber < $1.seasonNumber }
+
+        return SeriesDetail(id: id, seasons: seasons)
+    }
+
     static func makeMovieDetail(id: String, from response: XtreamVodInfoResponseDTO) -> MovieDetail {
         let info = response.info
         return MovieDetail(

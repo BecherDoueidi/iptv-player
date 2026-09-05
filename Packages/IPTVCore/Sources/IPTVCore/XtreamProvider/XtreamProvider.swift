@@ -26,4 +26,19 @@ public final class XtreamProvider: MediaProvider {
         let response = try await apiClient.fetchMovieDetail(credentials: credentials, movieID: movieID)
         return XtreamMapper.makeMovieDetail(id: movieID, from: response)
     }
+
+    public func fetchSeriesCategories(credentials: XtreamCredentials) async throws -> [MediaCategory] {
+        let dtos = try await apiClient.fetchSeriesCategories(credentials: credentials)
+        return XtreamMapper.makeCategories(from: dtos)
+    }
+
+    public func fetchSeries(credentials: XtreamCredentials, categoryID: String?) async throws -> [SeriesSummary] {
+        let dtos = try await apiClient.fetchSeries(credentials: credentials, categoryID: categoryID)
+        return XtreamMapper.makeSeriesSummaries(from: dtos)
+    }
+
+    public func fetchSeriesDetail(credentials: XtreamCredentials, seriesID: String) async throws -> SeriesDetail {
+        let response = try await apiClient.fetchSeriesDetail(credentials: credentials, seriesID: seriesID)
+        return XtreamMapper.makeSeriesDetail(id: seriesID, from: response)
+    }
 }

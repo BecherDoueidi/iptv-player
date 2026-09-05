@@ -73,7 +73,8 @@ struct SeriesDetailView: View {
                 Text("Season \(season.seasonNumber)").tag(season.seasonNumber)
             }
         }
-        .pickerStyle(.segmented)
+        .pickerStyle(.menu)
+        .tint(.primary)
     }
 
     private var episodeList: some View {

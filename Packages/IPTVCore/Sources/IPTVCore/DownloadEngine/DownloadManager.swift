@@ -5,7 +5,7 @@ public enum DownloadError: Error {
     case insufficientDiskSpace
 }
 
-/// Owns the one shared background `URLSession` for the app. Delegate callbacks are
+/// Owns the one shared download `URLSession` for the app. Delegate callbacks are
 /// received on the main queue (`delegateQueue: .main`) specifically so they can touch
 /// SwiftData's `ModelContext` directly without cross-actor `Sendable` machinery — a
 /// deliberate simplification appropriate for a personal app, not a general pattern.
@@ -17,7 +17,6 @@ public enum DownloadError: Error {
 /// where it stopped instead of silently producing a broken file.
 @MainActor
 public final class DownloadManager: NSObject {
-    public static let backgroundSessionIdentifier = "com.personal.iptvplayer.downloads"
     private static let minimumValidFileSizeBytes: Int64 = 100_000 // sanity floor, not a real size estimate
     private static let minimumFreeDiskSpaceBytes: Int64 = 200_000_000 // 200 MB safety margin
     /// Generous, because a flaky panel may drop the connection many times over a
@@ -29,7 +28,6 @@ public final class DownloadManager: NSObject {
 
     private var session: URLSession!
     private var modelContext: ModelContext?
-    private var backgroundCompletionHandler: (() -> Void)?
     private var tasksByContentKey: [String: URLSessionDownloadTask] = [:]
     private var lastProgressSaveAt: [String: Date] = [:]
     /// Avoids a SwiftData fetch inside `didWriteData`, which fires many times per
@@ -46,10 +44,16 @@ public final class DownloadManager: NSObject {
     // isolation checks; nothing in this init reads previously-isolated state.
     public nonisolated override init() {
         super.init()
-        let config = URLSessionConfiguration.background(withIdentifier: Self.backgroundSessionIdentifier)
-        config.isDiscretionary = false
-        config.sessionSendsLaunchEvents = true
+        // Deliberately a *default* session, not `.background`. The background session
+        // transfers out-of-process through nsurlsessiond, which negotiates with these
+        // panels differently than a normal in-process client (VLC plays the very same
+        // URLs fine) and was being cut off after a few kilobytes. Losing out-of-process
+        // transfer is affordable now that segments resume from the `.part` file: a
+        // download interrupted by backgrounding simply continues on next launch.
+        let config = URLSessionConfiguration.default
+        config.waitsForConnectivity = true
         config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 60 * 60 * 12
         session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }
 
@@ -62,11 +66,6 @@ public final class DownloadManager: NSObject {
                 self?.reconcile(liveTasks: tasks)
             }
         }
-    }
-
-    /// Called from `AppDelegate.application(_:handleEventsForBackgroundURLSession:completionHandler:)`.
-    public func handleBackgroundEvents(completionHandler: @escaping () -> Void) {
-        backgroundCompletionHandler = completionHandler
     }
 
     public func enqueue(contentKey: String, kind: ContentKind, title: String, sourceURL: URL) throws {
@@ -118,6 +117,20 @@ public final class DownloadManager: NSObject {
 
     public func retry(contentKey: String) {
         resume(contentKey: contentKey)
+    }
+
+    /// Called when the app returns to the foreground. Transfers can only run while the
+    /// app is active (see `init`), so anything left mid-flight is picked up here —
+    /// continuing from the `.part` file rather than restarting.
+    public func resumeInterruptedDownloads() {
+        guard let modelContext else { return }
+        guard let downloads = try? modelContext.fetch(FetchDescriptor<Download>()) else { return }
+        for download in downloads where download.state == .downloading || download.state == .queued {
+            guard tasksByContentKey[download.contentKey] == nil else { continue }
+            downloadsByContentKey[download.contentKey] = download
+            segmentAttempts[download.contentKey] = 0
+            startSegment(for: download)
+        }
     }
 
     public func cancel(contentKey: String) {
@@ -292,9 +305,10 @@ public final class DownloadManager: NSObject {
                 if let fileURL = download.localFileURL, FileManager.default.fileExists(atPath: fileURL.path) {
                     download.state = .completed
                 } else {
-                    download.state = .paused
+                    // Left as `.downloading` on purpose: `resumeInterruptedDownloads()`
+                    // runs right after this and continues it from the `.part` file.
+                    download.state = .downloading
                     download.bytesReceived = bytesOnDisk(for: download.contentKey)
-                    download.lastError = "Stopped while the app was closed — tap Resume to continue."
                 }
             case .paused, .completed, .failed, .cancelled:
                 break
@@ -431,12 +445,6 @@ extension DownloadManager: URLSessionDownloadDelegate {
         }
     }
 
-    public nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        MainActor.assumeIsolated {
-            backgroundCompletionHandler?()
-            backgroundCompletionHandler = nil
-        }
-    }
 }
 
 private extension DownloadManager {
@@ -462,6 +470,10 @@ private extension DownloadManager {
             fail(download, message: "Gave up after \(attempts) reconnects — the server keeps interrupting the transfer.")
             return
         }
+        // Shown in the Downloads row while still in `.downloading`, so a transfer that
+        // is limping along via reconnects is visibly different from a healthy one.
+        download.lastError = "Server closed the connection — reconnect \(attempts)"
+        try? modelContext?.save()
         startSegment(for: download)
     }
 }

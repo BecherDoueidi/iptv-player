@@ -22,6 +22,9 @@ struct IPTVPlayerApp: App {
                             modelContext: dependencies.modelContainer.mainContext,
                             downloadManager: dependencies.downloadManager
                         )
+                        // Transfers only run while the app is active, so anything left
+                        // mid-flight continues here from its partial file.
+                        dependencies.downloadManager.resumeInterruptedDownloads()
                     }
                 }
         }

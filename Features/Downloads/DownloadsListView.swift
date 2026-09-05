@@ -77,6 +77,11 @@ private struct DownloadRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                // Non-fatal note while still downloading — surfaces a transfer that is
+                // only limping along by reconnecting after each server cut-off.
+                if let note = download.lastError {
+                    Text(note).font(.caption2).foregroundStyle(.orange)
+                }
             case .paused:
                 Text("Paused — \(formattedBytes(download.bytesReceived)) downloaded")
                     .font(.caption)

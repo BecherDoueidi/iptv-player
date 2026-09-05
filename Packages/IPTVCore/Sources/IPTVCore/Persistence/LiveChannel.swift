@@ -12,6 +12,9 @@ public class LiveChannel {
     public var categoryID: String?
     public var number: Int?
     public var epgChannelID: String?
+    /// Drives the Channel History section. Kept on the mirror row rather than in its
+    /// own table because it's worthless once the channel is gone from the provider.
+    public var lastPlayedAt: Date?
     public var lastSyncedAt: Date
 
     public init(
@@ -22,6 +25,7 @@ public class LiveChannel {
         categoryID: String? = nil,
         number: Int? = nil,
         epgChannelID: String? = nil,
+        lastPlayedAt: Date? = nil,
         lastSyncedAt: Date = .now
     ) {
         self.contentKey = contentKey
@@ -31,6 +35,7 @@ public class LiveChannel {
         self.categoryID = categoryID
         self.number = number
         self.epgChannelID = epgChannelID
+        self.lastPlayedAt = lastPlayedAt
         self.lastSyncedAt = lastSyncedAt
     }
 

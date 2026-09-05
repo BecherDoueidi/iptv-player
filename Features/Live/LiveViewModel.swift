@@ -9,14 +9,17 @@ final class LiveViewModel {
     private(set) var channels: [LiveChannelSummary] = []
     private(set) var isLoading = false
     private(set) var errorMessage: String?
-    var selectedCategoryID: String?
     var searchText: String = ""
-    var favoritesOnly = false
+
+    /// Provider IDs of recently played channels, most recent first.
+    private(set) var historyIDs: [String] = []
 
     /// Content keys of favorited channels, refreshed from the store rather than
     /// observed with `@Query` — the list is filtered by it, and a per-row query on a
     /// list this long is exactly the pattern that froze the catalog screens.
     private(set) var favoriteKeys: Set<String> = []
+
+    private static let historyLimit = 50
 
     private let dependencies: AppDependencies
     private let account: ProviderAccount
@@ -32,14 +35,40 @@ final class LiveViewModel {
         ContentKey.make(sourceID: account.sourceID, kind: .live, providerID: channel.id)
     }
 
-    var filteredChannels: [LiveChannelSummary] {
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespaces)
-        return channels.filter { channel in
-            let matchesCategory = selectedCategoryID == nil || channel.categoryID == selectedCategoryID
-            let matchesSearch = trimmedSearch.isEmpty || channel.name.localizedCaseInsensitiveContains(trimmedSearch)
-            let matchesFavorites = !favoritesOnly || favoriteKeys.contains(contentKey(for: channel))
-            return matchesCategory && matchesSearch && matchesFavorites
+    var isSearching: Bool {
+        !searchText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Search deliberately spans every channel, not just the section being viewed —
+    /// looking for a channel by name and being shown "no results" because you happened
+    /// to be inside one category is the wrong behaviour.
+    var searchResults: [LiveChannelSummary] {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return [] }
+        return channels.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
+
+    var sections: [LiveSection] {
+        [.all, .favorites, .history] + categories.map { .category(id: $0.id, name: $0.name) }
+    }
+
+    func channels(in section: LiveSection) -> [LiveChannelSummary] {
+        switch section {
+        case .all:
+            return channels
+        case .favorites:
+            return channels.filter { favoriteKeys.contains(contentKey(for: $0)) }
+        case .history:
+            // Ordered by when they were played, not by channel number.
+            let byID = Dictionary(channels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            return historyIDs.compactMap { byID[$0] }
+        case .category(let id, _):
+            return channels.filter { $0.categoryID == id }
         }
+    }
+
+    func channelCount(in section: LiveSection) -> Int {
+        channels(in: section).count
     }
 
     func streamURL(for channel: LiveChannelSummary) -> URL? {
@@ -57,6 +86,7 @@ final class LiveViewModel {
         guard channels.isEmpty, !isLoading else { return }
         loadFromCache(modelContext: modelContext)
         loadFavorites(modelContext: modelContext)
+        loadHistory(modelContext: modelContext)
         await refresh(modelContext: modelContext)
     }
 
@@ -65,6 +95,35 @@ final class LiveViewModel {
         let descriptor = FetchDescriptor<Favorite>()
         guard let favorites = try? modelContext.fetch(descriptor) else { return }
         favoriteKeys = Set(favorites.map(\.contentKey))
+    }
+
+    @MainActor
+    func loadHistory(modelContext: ModelContext) {
+        var descriptor = FetchDescriptor<LiveChannel>(
+            predicate: #Predicate { $0.lastPlayedAt != nil },
+            sortBy: [SortDescriptor(\.lastPlayedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = Self.historyLimit
+        guard let rows = try? modelContext.fetch(descriptor) else { return }
+        let prefix = "\(account.sourceID)|live|"
+        historyIDs = rows.filter { $0.contentKey.hasPrefix(prefix) }.map(\.providerID)
+    }
+
+    /// Recorded when playback starts. One targeted fetch per tap is fine here — unlike
+    /// the per-row lookups that froze the catalog screens, this runs once on a tap.
+    @MainActor
+    func recordPlayback(of channel: LiveChannelSummary, modelContext: ModelContext) {
+        let key = contentKey(for: channel)
+        let descriptor = FetchDescriptor<LiveChannel>(predicate: #Predicate { $0.contentKey == key })
+        guard let row = try? modelContext.fetch(descriptor).first else { return }
+        row.lastPlayedAt = .now
+        try? modelContext.save()
+
+        historyIDs.removeAll { $0 == channel.id }
+        historyIDs.insert(channel.id, at: 0)
+        if historyIDs.count > Self.historyLimit {
+            historyIDs.removeLast(historyIDs.count - Self.historyLimit)
+        }
     }
 
     @MainActor

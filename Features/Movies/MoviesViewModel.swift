@@ -5,7 +5,7 @@ import IPTVCore
 
 @Observable
 final class MoviesViewModel {
-    private(set) var categories: [Category] = []
+    private(set) var categories: [MediaCategory] = []
     private(set) var movies: [MovieSummary] = []
     private(set) var isLoading = false
     private(set) var errorMessage: String?

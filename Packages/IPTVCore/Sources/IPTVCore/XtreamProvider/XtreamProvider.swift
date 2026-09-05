@@ -12,7 +12,7 @@ public final class XtreamProvider: MediaProvider {
         return XtreamMapper.makeAccountInfo(from: response)
     }
 
-    public func fetchMovieCategories(credentials: XtreamCredentials) async throws -> [Category] {
+    public func fetchMovieCategories(credentials: XtreamCredentials) async throws -> [MediaCategory] {
         let dtos = try await apiClient.fetchMovieCategories(credentials: credentials)
         return XtreamMapper.makeCategories(from: dtos)
     }

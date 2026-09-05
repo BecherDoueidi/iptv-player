@@ -10,7 +10,7 @@ final class XtreamVodDecodingTests: XCTestCase {
         let dtos = try JSONDecoder().decode([XtreamCategoryDTO].self, from: json)
         let categories = XtreamMapper.makeCategories(from: dtos)
 
-        XCTAssertEqual(categories, [Category(id: "5", name: "Action")])
+        XCTAssertEqual(categories, [MediaCategory(id: "5", name: "Action")])
     }
 
     func testCategoriesDecodeWithIntegerID() throws {
@@ -22,7 +22,7 @@ final class XtreamVodDecodingTests: XCTestCase {
         let dtos = try JSONDecoder().decode([XtreamCategoryDTO].self, from: json)
         let categories = XtreamMapper.makeCategories(from: dtos)
 
-        XCTAssertEqual(categories, [Category(id: "5", name: "Action")])
+        XCTAssertEqual(categories, [MediaCategory(id: "5", name: "Action")])
     }
 
     func testMovieSummariesDecodeAndToleratesMissingOptionalFields() throws {

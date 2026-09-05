@@ -21,10 +21,10 @@ enum XtreamMapper {
         )
     }
 
-    static func makeCategories(from dtos: [XtreamCategoryDTO]) -> [Category] {
+    static func makeCategories(from dtos: [XtreamCategoryDTO]) -> [MediaCategory] {
         dtos.compactMap { dto in
             guard let id = dto.categoryID, let name = dto.categoryName else { return nil }
-            return Category(id: id, name: name)
+            return MediaCategory(id: id, name: name)
         }
     }
 

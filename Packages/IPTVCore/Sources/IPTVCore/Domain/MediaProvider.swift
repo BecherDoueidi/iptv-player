@@ -5,7 +5,7 @@ import Foundation
 /// nothing outside `XtreamProvider/` should ever need to know it's Xtream underneath.
 public protocol MediaProvider {
     func authenticate(credentials: XtreamCredentials) async throws -> AccountInfo
-    func fetchMovieCategories(credentials: XtreamCredentials) async throws -> [Category]
+    func fetchMovieCategories(credentials: XtreamCredentials) async throws -> [MediaCategory]
     func fetchMovies(credentials: XtreamCredentials, categoryID: String?) async throws -> [MovieSummary]
     func fetchMovieDetail(credentials: XtreamCredentials, movieID: String) async throws -> MovieDetail
 }

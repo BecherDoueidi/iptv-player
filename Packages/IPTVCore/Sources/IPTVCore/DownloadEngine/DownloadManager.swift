@@ -34,6 +34,12 @@ public final class DownloadManager: NSObject {
     /// permanently unable — most importantly the bare 404 used for "too many
     /// connections on this account".
     private static let retryableStatusCodes: Set<Int> = [403, 404, 408, 429, 500, 502, 503, 504]
+    /// One at a time, deliberately. These accounts cap concurrent connections and
+    /// answer anything over the cap with a bare 404, so a second simultaneous download
+    /// doesn't run slower — it fails outright, and can take the first one with it.
+    /// Playback consumes a connection from the same budget, which is why this is 1 and
+    /// not the account's advertised maximum.
+    private static let maximumConcurrentTransfers = 1
 
     private var session: URLSession!
     private var modelContext: ModelContext?
@@ -55,6 +61,10 @@ public final class DownloadManager: NSObject {
     /// Set when a segment is deliberately stopped, so its `didCompleteWithError` isn't
     /// mistaken for the server dropping the connection.
     private var intentionallyStopped: Set<String> = []
+    /// Downloads holding a transfer slot. A download keeps its slot across the gap
+    /// between segments — it is mid-reconnect, not finished — so this can't be derived
+    /// from `tasksByContentKey`, which is empty during the backoff.
+    private var activeKeys: Set<String> = []
 
     // `nonisolated` so this can be constructed from AppDependencies' own nonisolated
     // init (which itself must stay nonisolated — see EnvironmentKey.defaultValue).
@@ -107,7 +117,7 @@ public final class DownloadManager: NSObject {
         resetAttemptCounters(for: contentKey)
         try? modelContext.save()
 
-        startSegment(for: download)
+        startNextIfPossible()
     }
 
     public func pause(contentKey: String) {
@@ -117,13 +127,16 @@ public final class DownloadManager: NSObject {
         download.state = .paused
         download.lastError = nil
         try? modelContext?.save()
+        releaseSlot(contentKey: contentKey)
     }
 
     public func resume(contentKey: String) {
         guard let download = cachedDownload(forKey: contentKey) else { return }
         resetAttemptCounters(for: contentKey)
         download.lastError = nil
-        startSegment(for: download)
+        download.state = .queued
+        try? modelContext?.save()
+        startNextIfPossible()
     }
 
     public func retry(contentKey: String) {
@@ -137,11 +150,14 @@ public final class DownloadManager: NSObject {
         guard let modelContext else { return }
         guard let downloads = try? modelContext.fetch(FetchDescriptor<Download>()) else { return }
         for download in downloads where download.state == .downloading || download.state == .queued {
-            guard tasksByContentKey[download.contentKey] == nil else { continue }
+            guard tasksByContentKey[download.contentKey] == nil,
+                  !activeKeys.contains(download.contentKey) else { continue }
             downloadsByContentKey[download.contentKey] = download
             resetAttemptCounters(for: download.contentKey)
-            startSegment(for: download)
+            download.state = .queued
         }
+        try? modelContext.save()
+        startNextIfPossible()
     }
 
     public func cancel(contentKey: String) {
@@ -160,6 +176,33 @@ public final class DownloadManager: NSObject {
         consecutiveEmptyAttempts[contentKey] = nil
         modelContext.delete(download)
         try? modelContext.save()
+        releaseSlot(contentKey: contentKey)
+    }
+
+    /// Starts the oldest waiting download if a transfer slot is free. Everything that
+    /// begins or ends a transfer funnels through here rather than calling
+    /// `startSegment` directly, so the concurrency cap can't be bypassed.
+    private func startNextIfPossible() {
+        guard let modelContext else { return }
+        guard activeKeys.count < Self.maximumConcurrentTransfers else { return }
+
+        let descriptor = FetchDescriptor<Download>(
+            predicate: #Predicate { $0.stateRaw == "queued" },
+            sortBy: [SortDescriptor(\.createdAt)]
+        )
+        // Skipping active keys as well as the state check: a download mid-reconnect
+        // can briefly still read as queued, and starting it twice would open exactly
+        // the second connection this cap exists to prevent.
+        guard let next = (try? modelContext.fetch(descriptor))?
+            .first(where: { !activeKeys.contains($0.contentKey) })
+        else { return }
+        downloadsByContentKey[next.contentKey] = next
+        startSegment(for: next)
+    }
+
+    private func releaseSlot(contentKey: String) {
+        activeKeys.remove(contentKey)
+        startNextIfPossible()
     }
 
     // MARK: - Files
@@ -232,6 +275,7 @@ public final class DownloadManager: NSObject {
         let task = session.dataTask(with: request)
         task.taskDescription = contentKey
         tasksByContentKey[contentKey] = task
+        activeKeys.insert(contentKey)
         segmentBaseBytes[contentKey] = offset
         download.bytesReceived = offset
         download.state = .downloading
@@ -244,6 +288,7 @@ public final class DownloadManager: NSObject {
         download.state = .failed
         download.lastError = message
         try? modelContext?.save()
+        releaseSlot(contentKey: download.contentKey)
     }
 
     /// Opens (creating if needed) the append handle for a transfer's partial file.
@@ -290,6 +335,7 @@ public final class DownloadManager: NSObject {
             download.completedAt = .now
             download.lastError = nil
             try? modelContext.save()
+            releaseSlot(contentKey: contentKey)
         } catch {
             fail(download, message: error.localizedDescription)
         }

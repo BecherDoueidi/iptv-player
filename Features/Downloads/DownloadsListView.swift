@@ -43,6 +43,8 @@ private struct DownloadRow: View {
     let dependencies: AppDependencies
     let onPlay: (PlaybackRequest) -> Void
 
+    @State private var showingDeleteConfirmation = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Group {
@@ -87,7 +89,10 @@ private struct DownloadRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .queued:
-                Text("Queued").font(.caption).foregroundStyle(.secondary)
+                // Downloads run one at a time on purpose — see maximumConcurrentTransfers.
+                Text("Waiting for the current download to finish")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             case .completed:
                 Text("Downloaded — \(formattedBytes(download.bytesReceived))")
                     .font(.caption)
@@ -119,13 +124,42 @@ private struct DownloadRow: View {
                 Spacer()
 
                 Button("Delete", role: .destructive) {
-                    dependencies.downloadManager.cancel(contentKey: download.contentKey)
+                    showingDeleteConfirmation = true
                 }
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
         }
         .padding(.vertical, 4)
+        .confirmationDialog(
+            deleteConfirmationTitle,
+            isPresented: $showingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                dependencies.downloadManager.cancel(contentKey: download.contentKey)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(deleteConfirmationMessage)
+        }
+    }
+
+    /// Deleting is irreversible and re-downloading is expensive on these panels, so the
+    /// wording says which of the two very different things this button is about to do.
+    private var deleteConfirmationTitle: String {
+        download.state == .completed ? "Delete \(download.title)?" : "Stop downloading \(download.title)?"
+    }
+
+    private var deleteConfirmationMessage: String {
+        switch download.state {
+        case .completed:
+            return "This removes the downloaded file from your device. You can download it again later."
+        case .downloading, .queued, .paused:
+            return "This cancels the download and discards the \(formattedBytes(download.bytesReceived)) already downloaded."
+        case .failed, .cancelled:
+            return "This removes it from the list, along with any partly downloaded file."
+        }
     }
 
     private func play() {

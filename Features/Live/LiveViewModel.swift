@@ -18,6 +18,9 @@ final class LiveViewModel {
     /// observed with `@Query` — the list is filtered by it, and a per-row query on a
     /// list this long is exactly the pattern that froze the catalog screens.
     private(set) var favoriteKeys: Set<String> = []
+    /// Recomputed whenever the channel list, favourites or history change — never per
+    /// row. Live lists are the largest in the app, so this matters most here.
+    private(set) var sectionCounts = SectionCounts()
 
     private static let historyLimit = 50
 
@@ -68,7 +71,23 @@ final class LiveViewModel {
     }
 
     func channelCount(in section: LiveSection) -> Int {
-        channels(in: section).count
+        switch section {
+        case .all: return sectionCounts.total
+        case .favorites: return sectionCounts.favorites
+        case .history: return sectionCounts.history
+        case .category(let id, _): return sectionCounts.count(forCategory: id)
+        }
+    }
+
+    @MainActor
+    private func recomputeSectionCounts() {
+        sectionCounts = SectionCounts(
+            items: channels,
+            itemID: \.id,
+            categoryID: \.categoryID,
+            isFavorite: { self.favoriteKeys.contains(self.contentKey(for: $0)) },
+            historyIDs: historyIDs
+        )
     }
 
     func streamURL(for channel: LiveChannelSummary) -> URL? {
@@ -84,10 +103,10 @@ final class LiveViewModel {
     @MainActor
     func loadIfNeeded(modelContext: ModelContext) async {
         guard channels.isEmpty, !isLoading else { return }
-        loadFromCache(modelContext: modelContext)
+        await loadFromCache()
         loadFavorites(modelContext: modelContext)
         loadHistory(modelContext: modelContext)
-        await refresh(modelContext: modelContext)
+        await refresh()
     }
 
     @MainActor
@@ -95,6 +114,7 @@ final class LiveViewModel {
         let descriptor = FetchDescriptor<Favorite>()
         guard let favorites = try? modelContext.fetch(descriptor) else { return }
         favoriteKeys = Set(favorites.map(\.contentKey))
+        recomputeSectionCounts()
     }
 
     @MainActor
@@ -107,6 +127,7 @@ final class LiveViewModel {
         guard let rows = try? modelContext.fetch(descriptor) else { return }
         let prefix = "\(account.sourceID)|live|"
         historyIDs = rows.filter { $0.contentKey.hasPrefix(prefix) }.map(\.providerID)
+        recomputeSectionCounts()
     }
 
     /// Recorded when playback starts. One targeted fetch per tap is fine here — unlike
@@ -124,6 +145,7 @@ final class LiveViewModel {
         if historyIDs.count > Self.historyLimit {
             historyIDs.removeLast(historyIDs.count - Self.historyLimit)
         }
+        recomputeSectionCounts()
     }
 
     @MainActor
@@ -143,32 +165,21 @@ final class LiveViewModel {
             favoriteKeys.insert(key)
         }
         try? modelContext.save()
+        recomputeSectionCounts()
     }
 
     /// Populates from persisted data first so the channel list is browsable while the
     /// network refresh is in flight, or if it fails.
     @MainActor
-    private func loadFromCache(modelContext: ModelContext) {
-        guard let cached = try? modelContext.fetch(FetchDescriptor<LiveChannel>()) else { return }
-        let prefix = "\(account.sourceID)|live|"
-        let relevant = cached.filter { $0.contentKey.hasPrefix(prefix) }
-        guard !relevant.isEmpty else { return }
-        channels = relevant
-            .map {
-                LiveChannelSummary(
-                    id: $0.providerID,
-                    categoryID: $0.categoryID,
-                    name: $0.name,
-                    logoURL: $0.logoURL,
-                    number: $0.number,
-                    epgChannelID: $0.epgChannelID
-                )
-            }
-            .sorted { ($0.number ?? .max, $0.name) < ($1.number ?? .max, $1.name) }
+    private func loadFromCache() async {
+        let cached = await dependencies.catalogStore.cachedLiveChannels(sourceID: account.sourceID)
+        guard !cached.isEmpty else { return }
+        channels = cached.sorted { ($0.number ?? .max, $0.name) < ($1.number ?? .max, $1.name) }
+        recomputeSectionCounts()
     }
 
     @MainActor
-    func refresh(modelContext: ModelContext) async {
+    func refresh() async {
         guard let credentials else {
             errorMessage = "Missing saved credentials — please sign in again."
             return
@@ -185,43 +196,13 @@ final class LiveViewModel {
 
             categories = fetchedCategories
             channels = fetchedChannels.sorted { ($0.number ?? .max, $0.name) < ($1.number ?? .max, $1.name) }
-            persist(fetchedChannels, modelContext: modelContext)
+            recomputeSectionCounts()
+            // Deliberately not awaited: the list is already on screen, and the write is
+            // only about the next cold start.
+            Task { await dependencies.catalogStore.persistLiveChannels(fetchedChannels, sourceID: account.sourceID) }
         } catch {
             errorMessage = Self.errorMessage(for: error)
         }
-    }
-
-    /// One bulk fetch + in-memory dictionary, not a query per channel — panels list
-    /// tens of thousands of live channels, and this runs on the main actor.
-    @MainActor
-    private func persist(_ summaries: [LiveChannelSummary], modelContext: ModelContext) {
-        let existing = (try? modelContext.fetch(FetchDescriptor<LiveChannel>())) ?? []
-        var byKey = Dictionary(existing.map { ($0.contentKey, $0) }, uniquingKeysWith: { first, _ in first })
-
-        for summary in summaries {
-            let key = ContentKey.make(sourceID: account.sourceID, kind: .live, providerID: summary.id)
-            if let row = byKey[key] {
-                row.name = summary.name
-                row.logoURLString = summary.logoURL?.absoluteString
-                row.categoryID = summary.categoryID
-                row.number = summary.number
-                row.epgChannelID = summary.epgChannelID
-                row.lastSyncedAt = .now
-            } else {
-                let row = LiveChannel(
-                    contentKey: key,
-                    providerID: summary.id,
-                    name: summary.name,
-                    logoURLString: summary.logoURL?.absoluteString,
-                    categoryID: summary.categoryID,
-                    number: summary.number,
-                    epgChannelID: summary.epgChannelID
-                )
-                modelContext.insert(row)
-                byKey[key] = row
-            }
-        }
-        try? modelContext.save()
     }
 
     private static func errorMessage(for error: Error) -> String {

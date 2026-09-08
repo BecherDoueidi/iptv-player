@@ -61,7 +61,7 @@ struct MoviesListView: View {
                 viewModel.loadHistory(modelContext: modelContext)
             }
             .refreshable {
-                await viewModel.refresh(modelContext: modelContext)
+                await viewModel.refresh()
                 viewModel.loadFavorites(modelContext: modelContext)
                 viewModel.loadHistory(modelContext: modelContext)
             }

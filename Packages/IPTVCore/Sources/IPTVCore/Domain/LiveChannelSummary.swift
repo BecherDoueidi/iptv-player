@@ -1,7 +1,7 @@
 import Foundation
 
 /// One entry from Xtream's live channel list (`get_live_streams`).
-public struct LiveChannelSummary: Identifiable, Equatable, Hashable {
+public struct LiveChannelSummary: Identifiable, Equatable, Hashable, Sendable {
     public let id: String
     public let categoryID: String?
     public let name: String

@@ -54,7 +54,7 @@ struct LiveTVView: View {
                 await viewModel.loadIfNeeded(modelContext: modelContext)
             }
             .refreshable {
-                await viewModel.refresh(modelContext: modelContext)
+                await viewModel.refresh()
                 viewModel.loadFavorites(modelContext: modelContext)
                 viewModel.loadHistory(modelContext: modelContext)
             }

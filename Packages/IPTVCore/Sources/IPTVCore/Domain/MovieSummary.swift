@@ -2,7 +2,7 @@ import Foundation
 
 /// Fields available from Xtream's catalog list call (`get_vod_streams`). Full
 /// plot/genre/etc. require a separate per-title call — see `MovieDetail`.
-public struct MovieSummary: Identifiable, Equatable, Hashable {
+public struct MovieSummary: Identifiable, Equatable, Hashable, Sendable {
     public let id: String
     public let categoryID: String?
     public let title: String

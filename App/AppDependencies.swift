@@ -8,6 +8,8 @@ final class AppDependencies {
     let mediaProvider: MediaProvider
     let modelContainer: ModelContainer
     let downloadManager: DownloadManager
+    /// Catalog reads/writes run here, off the main actor — see CatalogStore.
+    let catalogStore: CatalogStore
 
     init() {
         credentialStore = KeychainCredentialStore()
@@ -33,6 +35,7 @@ final class AppDependencies {
             )
         }
 
+        catalogStore = CatalogStore(modelContainer: modelContainer)
         downloadManager = DownloadManager()
         AppDelegate.downloadManager = downloadManager
     }

@@ -16,6 +16,8 @@ final class MoviesViewModel {
     /// `@Query` — a per-row query on a catalog this size is what froze the app.
     private(set) var favoriteKeys: Set<String> = []
     private(set) var historyIDs: [String] = []
+    /// Recomputed whenever the catalog, favourites or history change — never per row.
+    private(set) var sectionCounts = SectionCounts()
 
     private static let historyLimit = 50
 
@@ -64,13 +66,30 @@ final class MoviesViewModel {
     }
 
     func movieCount(in section: CatalogSection) -> Int {
-        movies(in: section).count
+        switch section {
+        case .all: return sectionCounts.total
+        case .favorites: return sectionCounts.favorites
+        case .history: return sectionCounts.history
+        case .category(let id, _): return sectionCounts.count(forCategory: id)
+        }
+    }
+
+    @MainActor
+    private func recomputeSectionCounts() {
+        sectionCounts = SectionCounts(
+            items: movies,
+            itemID: \.id,
+            categoryID: \.categoryID,
+            isFavorite: { self.favoriteKeys.contains(self.contentKey(for: $0)) },
+            historyIDs: historyIDs
+        )
     }
 
     @MainActor
     func loadFavorites(modelContext: ModelContext) {
         guard let favorites = try? modelContext.fetch(FetchDescriptor<Favorite>()) else { return }
         favoriteKeys = Set(favorites.map(\.contentKey))
+        recomputeSectionCounts()
     }
 
     @MainActor
@@ -83,15 +102,16 @@ final class MoviesViewModel {
         guard let rows = try? modelContext.fetch(descriptor) else { return }
         let prefix = "\(account.sourceID)|movie|"
         historyIDs = rows.filter { $0.contentKey.hasPrefix(prefix) }.map(\.providerID)
+        recomputeSectionCounts()
     }
 
     @MainActor
     func loadIfNeeded(modelContext: ModelContext) async {
         guard movies.isEmpty, !isLoading else { return }
-        loadFromCache(modelContext: modelContext)
+        await loadFromCache()
         loadFavorites(modelContext: modelContext)
         loadHistory(modelContext: modelContext)
-        await refresh(modelContext: modelContext)
+        await refresh()
     }
 
     /// Populates from persisted data first so the catalog is browsable offline (or
@@ -99,26 +119,16 @@ final class MoviesViewModel {
     /// chips aren't cached (categories are never persisted, only movies are), so
     /// they won't appear until a successful network refresh — an acceptable
     /// offline-mode trade-off, not a bug.
-    private func loadFromCache(modelContext: ModelContext) {
-        guard let cached = try? modelContext.fetch(FetchDescriptor<Movie>()) else { return }
-        let prefix = "\(account.sourceID)|movie|"
-        let relevant = cached.filter { $0.contentKey.hasPrefix(prefix) }
-        guard !relevant.isEmpty else { return }
-        movies = relevant.map { movie in
-            MovieSummary(
-                id: movie.providerID,
-                categoryID: movie.categoryID,
-                title: movie.title,
-                posterURL: movie.posterURL,
-                containerExtension: movie.containerExtension,
-                rating: movie.rating,
-                addedAt: movie.addedAt
-            )
-        }
+    @MainActor
+    private func loadFromCache() async {
+        let cached = await dependencies.catalogStore.cachedMovies(sourceID: account.sourceID)
+        guard !cached.isEmpty else { return }
+        movies = cached
+        recomputeSectionCounts()
     }
 
     @MainActor
-    func refresh(modelContext: ModelContext) async {
+    func refresh() async {
         guard let credentials else {
             errorMessage = "Missing saved credentials — please sign in again."
             return
@@ -135,47 +145,13 @@ final class MoviesViewModel {
 
             categories = fetchedCategories
             movies = fetchedMovies
-            persist(fetchedMovies, modelContext: modelContext)
+            recomputeSectionCounts()
+            // Deliberately not awaited: the catalog is already on screen, and the
+            // write is only about the next cold start.
+            Task { await dependencies.catalogStore.persistMovies(fetchedMovies, sourceID: account.sourceID) }
         } catch {
             errorMessage = Self.errorMessage(for: error)
         }
-    }
-
-    /// One bulk fetch + in-memory dictionary lookup, not a query per movie — a
-    /// per-item FetchDescriptor here froze the app on any catalog of real-world
-    /// size (Xtream panels commonly list thousands of VOD entries), since this
-    /// runs synchronously on the main actor.
-    private func persist(_ summaries: [MovieSummary], modelContext: ModelContext) {
-        let existingMovies = (try? modelContext.fetch(FetchDescriptor<Movie>())) ?? []
-        var moviesByKey = Dictionary(uniqueKeysWithValues: existingMovies.map { ($0.contentKey, $0) })
-
-        for summary in summaries {
-            let key = ContentKey.make(sourceID: account.sourceID, kind: .movie, providerID: summary.id)
-
-            if let existing = moviesByKey[key] {
-                existing.title = summary.title
-                existing.posterURLString = summary.posterURL?.absoluteString
-                existing.categoryID = summary.categoryID
-                existing.containerExtension = summary.containerExtension
-                existing.rating = summary.rating
-                existing.addedAt = summary.addedAt
-                existing.lastSyncedAt = .now
-            } else {
-                let movie = Movie(
-                    contentKey: key,
-                    providerID: summary.id,
-                    title: summary.title,
-                    posterURLString: summary.posterURL?.absoluteString,
-                    rating: summary.rating,
-                    containerExtension: summary.containerExtension,
-                    categoryID: summary.categoryID,
-                    addedAt: summary.addedAt
-                )
-                modelContext.insert(movie)
-                moviesByKey[key] = movie
-            }
-        }
-        try? modelContext.save()
     }
 
     private static func errorMessage(for error: Error) -> String {

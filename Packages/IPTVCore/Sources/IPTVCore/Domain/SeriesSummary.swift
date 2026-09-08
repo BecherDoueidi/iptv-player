@@ -3,7 +3,7 @@ import Foundation
 /// Unlike movies, Xtream's series list endpoint (`get_series`) already includes
 /// plot/genre/rating/backdrop up front — no separate per-title call is needed just
 /// to browse. `get_series_info` (see `SeriesDetail`) is only needed for episodes.
-public struct SeriesSummary: Identifiable, Equatable, Hashable {
+public struct SeriesSummary: Identifiable, Equatable, Hashable, Sendable {
     public let id: String
     public let categoryID: String?
     public let title: String

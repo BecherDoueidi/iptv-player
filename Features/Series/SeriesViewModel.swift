@@ -16,6 +16,8 @@ final class SeriesViewModel {
     /// `@Query` — a per-row query on a catalog this size is what froze the app.
     private(set) var favoriteKeys: Set<String> = []
     private(set) var historyIDs: [String] = []
+    /// Recomputed whenever the catalog, favourites or history change — never per row.
+    private(set) var sectionCounts = SectionCounts()
 
     private static let historyLimit = 50
 
@@ -63,13 +65,30 @@ final class SeriesViewModel {
     }
 
     func seriesCount(in section: CatalogSection) -> Int {
-        series(in: section).count
+        switch section {
+        case .all: return sectionCounts.total
+        case .favorites: return sectionCounts.favorites
+        case .history: return sectionCounts.history
+        case .category(let id, _): return sectionCounts.count(forCategory: id)
+        }
+    }
+
+    @MainActor
+    private func recomputeSectionCounts() {
+        sectionCounts = SectionCounts(
+            items: seriesList,
+            itemID: \.id,
+            categoryID: \.categoryID,
+            isFavorite: { self.favoriteKeys.contains(self.contentKey(for: $0)) },
+            historyIDs: historyIDs
+        )
     }
 
     @MainActor
     func loadFavorites(modelContext: ModelContext) {
         guard let favorites = try? modelContext.fetch(FetchDescriptor<Favorite>()) else { return }
         favoriteKeys = Set(favorites.map(\.contentKey))
+        recomputeSectionCounts()
     }
 
     @MainActor
@@ -82,40 +101,30 @@ final class SeriesViewModel {
         guard let rows = try? modelContext.fetch(descriptor) else { return }
         let prefix = "\(account.sourceID)|series|"
         historyIDs = rows.filter { $0.contentKey.hasPrefix(prefix) }.map(\.providerID)
+        recomputeSectionCounts()
     }
 
     @MainActor
     func loadIfNeeded(modelContext: ModelContext) async {
         guard seriesList.isEmpty, !isLoading else { return }
-        loadFromCache(modelContext: modelContext)
+        await loadFromCache()
         loadFavorites(modelContext: modelContext)
         loadHistory(modelContext: modelContext)
-        await refresh(modelContext: modelContext)
+        await refresh()
     }
 
     /// Populates from persisted data first so the catalog is browsable offline (or
     /// while the network refresh below is still in flight / fails).
-    private func loadFromCache(modelContext: ModelContext) {
-        guard let cached = try? modelContext.fetch(FetchDescriptor<TVSeries>()) else { return }
-        let prefix = "\(account.sourceID)|series|"
-        let relevant = cached.filter { $0.contentKey.hasPrefix(prefix) }
-        guard !relevant.isEmpty else { return }
-        seriesList = relevant.map { series in
-            SeriesSummary(
-                id: series.providerID,
-                categoryID: series.categoryID,
-                title: series.title,
-                posterURL: series.posterURL,
-                backdropURL: series.backdropURL,
-                plot: series.plot,
-                genre: series.genre,
-                rating: series.rating
-            )
-        }
+    @MainActor
+    private func loadFromCache() async {
+        let cached = await dependencies.catalogStore.cachedSeries(sourceID: account.sourceID)
+        guard !cached.isEmpty else { return }
+        seriesList = cached
+        recomputeSectionCounts()
     }
 
     @MainActor
-    func refresh(modelContext: ModelContext) async {
+    func refresh() async {
         guard let credentials else {
             errorMessage = "Missing saved credentials — please sign in again."
             return
@@ -132,47 +141,13 @@ final class SeriesViewModel {
 
             categories = fetchedCategories
             seriesList = fetchedSeries
-            persist(fetchedSeries, modelContext: modelContext)
+            recomputeSectionCounts()
+            // Deliberately not awaited: the catalog is already on screen, and the
+            // write is only about the next cold start.
+            Task { await dependencies.catalogStore.persistSeries(fetchedSeries, sourceID: account.sourceID) }
         } catch {
             errorMessage = Self.errorMessage(for: error)
         }
-    }
-
-    /// One bulk fetch + in-memory dictionary lookup, not a query per series — see
-    /// MoviesViewModel.persist for why (froze the app on any real-world catalog size).
-    private func persist(_ summaries: [SeriesSummary], modelContext: ModelContext) {
-        let existingSeries = (try? modelContext.fetch(FetchDescriptor<TVSeries>())) ?? []
-        var seriesByKey = Dictionary(uniqueKeysWithValues: existingSeries.map { ($0.contentKey, $0) })
-
-        for summary in summaries {
-            let key = ContentKey.make(sourceID: account.sourceID, kind: .series, providerID: summary.id)
-
-            if let existing = seriesByKey[key] {
-                existing.title = summary.title
-                existing.posterURLString = summary.posterURL?.absoluteString
-                existing.backdropURLString = summary.backdropURL?.absoluteString
-                existing.plot = summary.plot
-                existing.genre = summary.genre
-                existing.rating = summary.rating
-                existing.categoryID = summary.categoryID
-                existing.lastSyncedAt = .now
-            } else {
-                let series = TVSeries(
-                    contentKey: key,
-                    providerID: summary.id,
-                    title: summary.title,
-                    posterURLString: summary.posterURL?.absoluteString,
-                    backdropURLString: summary.backdropURL?.absoluteString,
-                    plot: summary.plot,
-                    genre: summary.genre,
-                    rating: summary.rating,
-                    categoryID: summary.categoryID
-                )
-                modelContext.insert(series)
-                seriesByKey[key] = series
-            }
-        }
-        try? modelContext.save()
     }
 
     private static func errorMessage(for error: Error) -> String {

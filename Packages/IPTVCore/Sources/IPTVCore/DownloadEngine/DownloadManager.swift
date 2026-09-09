@@ -41,6 +41,13 @@ public final class DownloadManager: NSObject {
     /// not the account's advertised maximum.
     private static let maximumConcurrentTransfers = 1
 
+    /// Says what a bare refusal from these panels actually means, since the status code
+    /// alone reads as "this file doesn't exist" when it almost never does.
+    private static func refusalMessage(statusCode: Int) -> String {
+        "The server refused the download (HTTP \(statusCode)) — usually too many "
+            + "connections open on the account. Stop any playback and try again."
+    }
+
     private var session: URLSession!
     private var modelContext: ModelContext?
     private var tasksByContentKey: [String: URLSessionDataTask] = [:]
@@ -80,6 +87,9 @@ public final class DownloadManager: NSObject {
         // download interrupted by backgrounding simply continues on next launch.
         let config = URLSessionConfiguration.default
         config.waitsForConnectivity = true
+        // One connection to the panel, ever. Two in flight at once is what the account's
+        // connection cap rejects, and URLSession will happily open more by default.
+        config.httpMaximumConnectionsPerHost = 1
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = 60 * 60 * 12
         session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
@@ -410,17 +420,20 @@ extension DownloadManager: URLSessionDataDelegate {
                 intentionallyStopped.insert(contentKey)
                 tasksByContentKey[contentKey] = nil
                 // Panels cap concurrent connections per account and answer a request
-                // over that cap with an outright 404/403 rather than anything
-                // descriptive. Since the connection we just dropped may not have been
-                // released server-side yet, a refusal part-way through a file is worth
-                // retrying (with backoff) instead of condemning the download.
-                let refusedMidTransfer = Self.retryableStatusCodes.contains(http.statusCode)
-                    && bytesOnDisk(for: contentKey) > 0
-                if refusedMidTransfer {
+                // over that cap with a bare 404/403 rather than anything descriptive.
+                // That is a *temporary* condition — a connection we just dropped that
+                // the server hasn't released yet, poster art still loading from the
+                // same host, or a stream still playing — so it is retried with backoff.
+                //
+                // Gating this on "we already have bytes on disk" (as it briefly was)
+                // is wrong: the very first request is exactly when another connection
+                // is most likely to still be open, and that made a recoverable refusal
+                // kill the download outright.
+                if Self.retryableStatusCodes.contains(http.statusCode) {
                     continueOrFail(
                         download,
                         madeProgress: false,
-                        underlyingError: "The server refused the download (HTTP \(http.statusCode))."
+                        underlyingError: Self.refusalMessage(statusCode: http.statusCode)
                     )
                 } else {
                     fail(download, message: "The server refused the download (HTTP \(http.statusCode)).")

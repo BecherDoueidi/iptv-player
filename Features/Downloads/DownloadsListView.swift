@@ -68,14 +68,14 @@ private struct DownloadRow: View {
             case .downloading:
                 if download.bytesExpected > 0 {
                     ProgressView(value: progressFraction)
-                    Text("\(formattedBytes(download.bytesReceived)) / \(formattedBytes(download.bytesExpected))")
+                    Text("\(formattedBytes(download.bytesReceived)) / \(formattedBytes(download.bytesExpected))\(rateAndETA)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
                     // No Content-Length from the server — an indeterminate bar is
                     // honest here, where a 0%-forever progress bar looks broken.
                     ProgressView()
-                    Text("\(formattedBytes(download.bytesReceived)) downloaded")
+                    Text("\(formattedBytes(download.bytesReceived)) downloaded\(rateAndETA)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -99,6 +99,20 @@ private struct DownloadRow: View {
                     .foregroundStyle(.green)
             case .failed:
                 Text(download.lastError ?? "Failed").font(.caption).foregroundStyle(.red)
+            case .waitingForConnection:
+                // Not an error: the account's connections are all in use, most likely
+                // by another device, and this will start itself when one frees up.
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Waiting for a free connection")
+                }
+                .font(.caption)
+                .foregroundStyle(.orange)
+                if download.bytesReceived > 0 {
+                    Text("\(formattedBytes(download.bytesReceived)) downloaded so far")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             case .cancelled:
                 Text("Cancelled").font(.caption).foregroundStyle(.secondary)
             }
@@ -116,6 +130,10 @@ private struct DownloadRow: View {
                 case .failed:
                     Button("Retry") {
                         dependencies.downloadManager.retry(contentKey: download.contentKey)
+                    }
+                case .waitingForConnection:
+                    Button("Try Now") {
+                        dependencies.downloadManager.resume(contentKey: download.contentKey)
                     }
                 case .queued, .completed, .cancelled:
                     EmptyView()
@@ -155,7 +173,7 @@ private struct DownloadRow: View {
         switch download.state {
         case .completed:
             return "This removes the downloaded file from your device. You can download it again later."
-        case .downloading, .queued, .paused:
+        case .downloading, .queued, .paused, .waitingForConnection:
             return "This cancels the download and discards the \(formattedBytes(download.bytesReceived)) already downloaded."
         case .failed, .cancelled:
             return "This removes it from the list, along with any partly downloaded file."
@@ -165,6 +183,27 @@ private struct DownloadRow: View {
     private func play() {
         guard let localURL = download.localFileURL else { return }
         onPlay(PlaybackRequest(url: localURL, title: download.title, contentKey: download.contentKey))
+    }
+
+    /// Empty until a rate is actually known, so the label never claims "0 KB/s" for a
+    /// transfer that simply hasn't been sampled yet.
+    private var rateAndETA: String {
+        let rate = download.bytesPerSecond
+        guard rate > 1 else { return "" }
+        var text = " · \(formattedBytes(Int64(rate)))/s"
+        let remaining = download.bytesExpected - download.bytesReceived
+        if download.bytesExpected > 0, remaining > 0 {
+            text += " · \(formattedDuration(Double(remaining) / rate)) left"
+        }
+        return text
+    }
+
+    private func formattedDuration(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds > 0 else { return "—" }
+        let total = Int(seconds)
+        if total < 60 { return "\(total)s" }
+        if total < 3600 { return "\(total / 60)m" }
+        return "\(total / 3600)h \((total % 3600) / 60)m"
     }
 
     private var progressFraction: Double {

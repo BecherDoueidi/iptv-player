@@ -43,6 +43,12 @@ public final class DownloadManager: NSObject {
 
     /// Says what a bare refusal from these panels actually means, since the status code
     /// alone reads as "this file doesn't exist" when it almost never does.
+    /// How long to sit waiting for the account's connection to free up, and for how
+    /// long to keep doing it. Half an hour of patience costs nothing — the alternative
+    /// is failing a download because someone else was watching TV for two minutes.
+    private static let connectionWaitSeconds: Double = 30
+    private static let maximumConnectionWaitAttempts = 60
+
     private static func refusalMessage(statusCode: Int) -> String {
         "The server refused the download (HTTP \(statusCode)) — usually too many "
             + "connections open on the account. Stop any playback and try again."
@@ -72,6 +78,9 @@ public final class DownloadManager: NSObject {
     /// between segments — it is mid-reconnect, not finished — so this can't be derived
     /// from `tasksByContentKey`, which is empty during the backoff.
     private var activeKeys: Set<String> = []
+    private var connectionWaitAttempts: [String: Int] = [:]
+    /// Last progress sample per transfer, for the speed readout.
+    private var lastSpeedSample: [String: (at: Date, bytes: Int64)] = [:]
 
     // `nonisolated` so this can be constructed from AppDependencies' own nonisolated
     // init (which itself must stay nonisolated — see EnvironmentKey.defaultValue).
@@ -105,7 +114,8 @@ public final class DownloadManager: NSObject {
         guard let modelContext else { return }
 
         if let existing = cachedDownload(forKey: contentKey),
-           existing.state == .downloading || existing.state == .queued || existing.state == .completed {
+           existing.state == .downloading || existing.state == .queued
+            || existing.state == .waitingForConnection || existing.state == .completed {
             return
         }
 
@@ -159,7 +169,8 @@ public final class DownloadManager: NSObject {
     public func resumeInterruptedDownloads() {
         guard let modelContext else { return }
         guard let downloads = try? modelContext.fetch(FetchDescriptor<Download>()) else { return }
-        for download in downloads where download.state == .downloading || download.state == .queued {
+        for download in downloads
+        where download.state == .downloading || download.state == .queued || download.state == .waitingForConnection {
             guard tasksByContentKey[download.contentKey] == nil,
                   !activeKeys.contains(download.contentKey) else { continue }
             downloadsByContentKey[download.contentKey] = download
@@ -184,6 +195,8 @@ public final class DownloadManager: NSObject {
         segmentBaseBytes[contentKey] = nil
         segmentAttempts[contentKey] = nil
         consecutiveEmptyAttempts[contentKey] = nil
+        connectionWaitAttempts[contentKey] = nil
+        lastSpeedSample[contentKey] = nil
         modelContext.delete(download)
         try? modelContext.save()
         releaseSlot(contentKey: contentKey)
@@ -208,6 +221,36 @@ public final class DownloadManager: NSObject {
         else { return }
         downloadsByContentKey[next.contentKey] = next
         startSegment(for: next)
+    }
+
+    /// Keeps the download alive and its slot held while the account has no free
+    /// connection. Holding the slot is deliberate: if this download can't get a
+    /// connection, neither can the next one in the queue, so starting it would just
+    /// produce a second failure.
+    private func waitForFreeConnection(_ download: Download, message: String) {
+        let contentKey = download.contentKey
+        let attempts = (connectionWaitAttempts[contentKey] ?? 0) + 1
+        connectionWaitAttempts[contentKey] = attempts
+
+        guard attempts <= Self.maximumConnectionWaitAttempts else {
+            fail(download, message: message)
+            return
+        }
+
+        download.state = .waitingForConnection
+        download.lastError = message
+        try? modelContext?.save()
+
+        retryTasks[contentKey]?.cancel()
+        retryTasks[contentKey] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.connectionWaitSeconds * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.retryTasks[contentKey] = nil
+            // The user may have paused, cancelled or deleted it while we waited.
+            guard let current = self.cachedDownload(forKey: contentKey),
+                  current.state == .waitingForConnection else { return }
+            self.startSegment(for: current)
+        }
     }
 
     private func releaseSlot(contentKey: String) {
@@ -243,6 +286,7 @@ public final class DownloadManager: NSObject {
     private func resetAttemptCounters(for contentKey: String) {
         segmentAttempts[contentKey] = 0
         consecutiveEmptyAttempts[contentKey] = 0
+        connectionWaitAttempts[contentKey] = nil
     }
 
     private func closeHandle(for contentKey: String) {
@@ -287,6 +331,7 @@ public final class DownloadManager: NSObject {
         tasksByContentKey[contentKey] = task
         activeKeys.insert(contentKey)
         segmentBaseBytes[contentKey] = offset
+        lastSpeedSample[contentKey] = nil
         download.bytesReceived = offset
         download.state = .downloading
         try? modelContext?.save()
@@ -371,7 +416,7 @@ public final class DownloadManager: NSObject {
         for download in downloads {
             downloadsByContentKey[download.contentKey] = download
             switch download.state {
-            case .downloading, .queued:
+            case .downloading, .queued, .waitingForConnection:
                 if let fileURL = download.localFileURL, FileManager.default.fileExists(atPath: fileURL.path) {
                     download.state = .completed
                 } else {
@@ -430,17 +475,14 @@ extension DownloadManager: URLSessionDataDelegate {
                 // is most likely to still be open, and that made a recoverable refusal
                 // kill the download outright.
                 if Self.retryableStatusCodes.contains(http.statusCode) {
-                    continueOrFail(
-                        download,
-                        madeProgress: false,
-                        underlyingError: Self.refusalMessage(statusCode: http.statusCode)
-                    )
+                    waitForFreeConnection(download, message: Self.refusalMessage(statusCode: http.statusCode))
                 } else {
                     fail(download, message: "The server refused the download (HTTP \(http.statusCode)).")
                 }
                 return
             }
 
+            connectionWaitAttempts[contentKey] = nil
             let base = segmentBaseBytes[contentKey] ?? 0
             // 200 in reply to a `Range` request means the server ignored it and is
             // resending from byte zero. Appending that would duplicate bytes and corrupt
@@ -492,7 +534,22 @@ extension DownloadManager: URLSessionDataDelegate {
             lastProgressSaveAt[contentKey] = now
 
             guard let download = cachedDownload(forKey: contentKey) else { return }
-            download.bytesReceived = (try? handle.offset()).map(Int64.init) ?? download.bytesReceived
+            let received = (try? handle.offset()).map(Int64.init) ?? download.bytesReceived
+
+            if let sample = lastSpeedSample[contentKey] {
+                let elapsed = now.timeIntervalSince(sample.at)
+                if elapsed > 0 {
+                    // Smoothed, because a raw per-second figure on a connection that
+                    // stalls and reconnects constantly is unreadable.
+                    let instant = Double(received - sample.bytes) / elapsed
+                    download.bytesPerSecond = download.bytesPerSecond == 0
+                        ? instant
+                        : download.bytesPerSecond * 0.7 + instant * 0.3
+                }
+            }
+            lastSpeedSample[contentKey] = (at: now, bytes: received)
+
+            download.bytesReceived = received
             try? modelContext.save()
         }
     }

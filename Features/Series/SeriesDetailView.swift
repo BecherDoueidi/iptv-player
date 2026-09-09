@@ -146,6 +146,7 @@ struct SeriesDetailView: View {
         case .downloading: return "arrow.down.circle.fill"
         case .failed: return "exclamationmark.circle"
         case .queued, .paused: return "clock"
+        case .waitingForConnection: return "hourglass"
         case .cancelled, .none: return "arrow.down.circle"
         }
     }
@@ -217,7 +218,8 @@ struct SeriesDetailView: View {
                     }
                     .buttonStyle(.borderless)
                     .disabled(credentials == nil || download(for: episode, in: index)?.state == .completed
-                        || download(for: episode, in: index)?.state == .downloading)
+                        || download(for: episode, in: index)?.state == .downloading
+                        || download(for: episode, in: index)?.state == .waitingForConnection)
                 }
                 .padding(.vertical, 4)
                 Divider()

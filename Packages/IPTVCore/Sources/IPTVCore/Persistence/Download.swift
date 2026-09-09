@@ -3,6 +3,10 @@ import SwiftData
 
 public enum DownloadState: String, Codable {
     case queued, downloading, paused, completed, failed, cancelled
+    /// The account has no free connection right now — typically another device is
+    /// streaming. Distinct from `.failed` because there is nothing wrong: the download
+    /// is simply waiting its turn, and will start itself when a connection frees up.
+    case waitingForConnection
 }
 
 /// Soft-keyed by `contentKey` (movie or episode) — deliberately not a SwiftData
@@ -21,6 +25,9 @@ public class Download {
     public var createdAt: Date
     public var completedAt: Date?
     public var lastError: String?
+    /// Transfer rate of the current segment. `@Transient` on purpose — it describes a
+    /// transfer happening right now, and would be meaningless restored from disk.
+    @Transient public var bytesPerSecond: Double = 0
 
     public init(
         contentKey: String,

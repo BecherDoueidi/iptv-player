@@ -72,7 +72,8 @@ struct MovieDetailView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .disabled(credentials == nil || download?.state == .completed || download?.state == .downloading)
+                .disabled(credentials == nil || download?.state == .completed
+            || download?.state == .downloading || download?.state == .waitingForConnection)
 
                 if let download, download.state == .downloading {
                     if download.bytesExpected > 0 {
@@ -123,6 +124,7 @@ struct MovieDetailView: View {
             guard let download, download.bytesExpected > 0 else { return "Downloading…" }
             return "Downloading \(Int(downloadProgress * 100))%"
         case .queued: return "Queued"
+        case .waitingForConnection: return "Waiting for a Free Connection"
         case .paused: return "Paused — Resume"
         case .failed: return "Retry Download"
         case .cancelled, .none: return "Download"

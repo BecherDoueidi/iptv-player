@@ -11,6 +11,8 @@ struct SettingsView: View {
     @AppStorage("autoDeleteWatchedDownloads") private var autoDeletePolicyRaw = AutoDeletePolicy.never.rawValue
     @AppStorage("appearance") private var appearanceRaw = AppearanceOption.system.rawValue
 
+    @State private var accountInfo: AccountInfo?
+    @State private var isLoadingAccountInfo = false
     @State private var showingSignOutConfirmation = false
     @State private var showingClearCacheConfirmation = false
     @State private var showingClearHistoryConfirmation = false
@@ -23,6 +25,10 @@ struct SettingsView: View {
                 Section("Account") {
                     LabeledContent("Server", value: account.serverURLString)
                     LabeledContent("Username", value: account.username)
+                    connectionsRow
+                    if let expiresAt = accountInfo?.expiresAt {
+                        LabeledContent("Expires", value: expiresAt.formatted(date: .abbreviated, time: .omitted))
+                    }
                     Button("Sign Out", role: .destructive) {
                         showingSignOutConfirmation = true
                     }
@@ -64,6 +70,8 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .task { await loadAccountInfo() }
+            .refreshable { await loadAccountInfo() }
             .confirmationDialog(
                 "Sign out of your account?",
                 isPresented: $showingSignOutConfirmation,
@@ -141,4 +149,37 @@ struct SettingsView: View {
         guard let items = try? modelContext.fetch(FetchDescriptor<T>()) else { return }
         for item in items { modelContext.delete(item) }
     }
+
+    /// Connections in use is the single most useful number on this screen: it is what
+    /// decides whether a download can start at all, and it is how you find out that
+    /// another device is holding the account's only slot.
+    @ViewBuilder
+    private var connectionsRow: some View {
+        if let info = accountInfo, let max = info.maxConnections {
+            let active = info.activeConnections ?? 0
+            LabeledContent("Connections") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(active) of \(max) in use")
+                        .foregroundStyle(active >= max ? .orange : .secondary)
+                    if active >= max {
+                        Text("Downloads wait until one frees up")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } else if isLoadingAccountInfo {
+            LabeledContent("Connections") { ProgressView().controlSize(.mini) }
+        }
+    }
+
+    private func loadAccountInfo() async {
+        guard let credentials = try? dependencies.credentialStore.loadCredentials() else { return }
+        isLoadingAccountInfo = true
+        defer { isLoadingAccountInfo = false }
+        // A failure here is not worth surfacing: this is a supplementary readout, and
+        // the rest of Settings works fine without it.
+        accountInfo = try? await dependencies.mediaProvider.authenticate(credentials: credentials)
+    }
+
 }

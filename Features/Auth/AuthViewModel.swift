@@ -37,7 +37,14 @@ final class AuthViewModel {
         }
 
         state = .authenticating
-        let credentials = XtreamCredentials(serverURL: serverURL, username: username, password: password)
+        // Trimmed because a trailing space -- from pasting, or from the keyboard's
+        // space-after-autocomplete -- is invisible in the field but makes the panel
+        // reject the credentials with a message that reads like a wrong password.
+        let credentials = XtreamCredentials(
+            serverURL: serverURL,
+            username: username.trimmingCharacters(in: .whitespacesAndNewlines),
+            password: password.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
 
         do {
             let accountInfo = try await dependencies.mediaProvider.authenticate(credentials: credentials)
@@ -49,9 +56,9 @@ final class AuthViewModel {
             try dependencies.credentialStore.save(credentials)
 
             let account = ProviderAccount(
-                sourceID: SourceID.make(serverURL: serverURL, username: username),
+                sourceID: SourceID.make(serverURL: serverURL, username: credentials.username),
                 serverURLString: serverURL.absoluteString,
-                username: username,
+                username: credentials.username,
                 accountStatus: accountInfo.status,
                 isTrial: accountInfo.isTrial,
                 expiresAt: accountInfo.expiresAt,

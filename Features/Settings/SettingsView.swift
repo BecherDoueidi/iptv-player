@@ -12,6 +12,7 @@ struct SettingsView: View {
     @AppStorage("appearance") private var appearanceRaw = AppearanceOption.system.rawValue
 
     @State private var accountInfo: AccountInfo?
+    @State private var accountInfoFetchedAt: Date?
     @State private var isLoadingAccountInfo = false
     @State private var showingSignOutConfirmation = false
     @State private var showingClearCacheConfirmation = false
@@ -70,8 +71,8 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
-            .task { await loadAccountInfo() }
-            .refreshable { await loadAccountInfo() }
+            .task { await loadAccountInfo(force: false) }
+            .refreshable { await loadAccountInfo(force: true) }
             .confirmationDialog(
                 "Sign out of your account?",
                 isPresented: $showingSignOutConfirmation,
@@ -173,13 +174,21 @@ struct SettingsView: View {
         }
     }
 
-    private func loadAccountInfo() async {
+    /// Rate-limited on purpose. Hitting `player_api.php` every time this screen appears
+    /// is needless load on a panel that is already strict about request volume, and the
+    /// connection count doesn't change fast enough to justify it. Pull to refresh forces
+    /// a fresh read.
+    private func loadAccountInfo(force: Bool) async {
+        if !force, let fetchedAt = accountInfoFetchedAt, Date().timeIntervalSince(fetchedAt) < 60 {
+            return
+        }
         guard let credentials = try? dependencies.credentialStore.loadCredentials() else { return }
         isLoadingAccountInfo = true
         defer { isLoadingAccountInfo = false }
         // A failure here is not worth surfacing: this is a supplementary readout, and
         // the rest of Settings works fine without it.
         accountInfo = try? await dependencies.mediaProvider.authenticate(credentials: credentials)
+        accountInfoFetchedAt = .now
     }
 
 }

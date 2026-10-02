@@ -71,8 +71,7 @@ public final class DownloadManager: NSObject {
 
     private static func refusalMessage(statusCode: Int, url: String) -> String {
         "The server refused the download (HTTP \(statusCode)) — usually too many "
-            + "connections open on the account. Stop any playback and try again.
-"
+            + "connections open on the account. Stop any playback and try again.\n"
             + redactedURL(url)
     }
 

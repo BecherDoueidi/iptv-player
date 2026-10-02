@@ -173,6 +173,9 @@ final class LiveViewModel {
     @MainActor
     private func loadFromCache() async {
         let cached = await dependencies.catalogStore.cachedLiveChannels(sourceID: account.sourceID)
+        // Sections come from the cache first. They are the navigation, so a slow
+        // or failed refresh must not leave the screen with nothing on it.
+        categories = await dependencies.catalogStore.cachedCategories(sourceID: account.sourceID, kind: .live)
         guard !cached.isEmpty else { return }
         channels = cached.sorted { ($0.number ?? .max, $0.name) < ($1.number ?? .max, $1.name) }
         recomputeSectionCounts()
@@ -194,12 +197,23 @@ final class LiveViewModel {
             async let channelsTask = dependencies.mediaProvider.fetchLiveChannels(credentials: credentials, categoryID: nil)
             let (fetchedCategories, fetchedChannels) = try await (categoriesTask, channelsTask)
 
-            categories = fetchedCategories
+            // An empty list from a flaky refresh must not wipe sections that are
+            // already on screen — keep the last known good set instead.
+            if !fetchedCategories.isEmpty {
+                categories = fetchedCategories
+            }
             channels = fetchedChannels.sorted { ($0.number ?? .max, $0.name) < ($1.number ?? .max, $1.name) }
             recomputeSectionCounts()
             // Deliberately not awaited: the list is already on screen, and the write is
             // only about the next cold start.
-            Task { await dependencies.catalogStore.persistLiveChannels(fetchedChannels, sourceID: account.sourceID) }
+            Task {
+                await dependencies.catalogStore.persistLiveChannels(fetchedChannels, sourceID: account.sourceID)
+                await dependencies.catalogStore.persistCategories(
+                    fetchedCategories,
+                    sourceID: account.sourceID,
+                    kind: .live
+                )
+            }
         } catch {
             errorMessage = Self.errorMessage(for: error)
         }

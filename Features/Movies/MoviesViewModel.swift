@@ -122,6 +122,9 @@ final class MoviesViewModel {
     @MainActor
     private func loadFromCache() async {
         let cached = await dependencies.catalogStore.cachedMovies(sourceID: account.sourceID)
+        // Sections come from the cache first. They are the navigation, so a slow
+        // or failed refresh must not leave the screen with nothing on it.
+        categories = await dependencies.catalogStore.cachedCategories(sourceID: account.sourceID, kind: .movie)
         guard !cached.isEmpty else { return }
         movies = cached
         recomputeSectionCounts()
@@ -143,12 +146,23 @@ final class MoviesViewModel {
             async let moviesTask = dependencies.mediaProvider.fetchMovies(credentials: credentials, categoryID: nil)
             let (fetchedCategories, fetchedMovies) = try await (categoriesTask, moviesTask)
 
-            categories = fetchedCategories
+            // An empty list from a flaky refresh must not wipe sections that are
+            // already on screen — keep the last known good set instead.
+            if !fetchedCategories.isEmpty {
+                categories = fetchedCategories
+            }
             movies = fetchedMovies
             recomputeSectionCounts()
             // Deliberately not awaited: the catalog is already on screen, and the
             // write is only about the next cold start.
-            Task { await dependencies.catalogStore.persistMovies(fetchedMovies, sourceID: account.sourceID) }
+            Task {
+                await dependencies.catalogStore.persistMovies(fetchedMovies, sourceID: account.sourceID)
+                await dependencies.catalogStore.persistCategories(
+                    fetchedCategories,
+                    sourceID: account.sourceID,
+                    kind: .movie
+                )
+            }
         } catch {
             errorMessage = Self.errorMessage(for: error)
         }

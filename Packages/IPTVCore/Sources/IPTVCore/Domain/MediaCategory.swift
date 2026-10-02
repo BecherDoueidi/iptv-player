@@ -1,6 +1,6 @@
 import Foundation
 
-public struct MediaCategory: Identifiable, Equatable, Hashable {
+public struct MediaCategory: Identifiable, Equatable, Hashable, Sendable {
     public let id: String
     public let name: String
 

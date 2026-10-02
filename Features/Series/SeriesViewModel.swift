@@ -118,6 +118,9 @@ final class SeriesViewModel {
     @MainActor
     private func loadFromCache() async {
         let cached = await dependencies.catalogStore.cachedSeries(sourceID: account.sourceID)
+        // Sections come from the cache first. They are the navigation, so a slow
+        // or failed refresh must not leave the screen with nothing on it.
+        categories = await dependencies.catalogStore.cachedCategories(sourceID: account.sourceID, kind: .series)
         guard !cached.isEmpty else { return }
         seriesList = cached
         recomputeSectionCounts()
@@ -139,12 +142,23 @@ final class SeriesViewModel {
             async let seriesTask = dependencies.mediaProvider.fetchSeries(credentials: credentials, categoryID: nil)
             let (fetchedCategories, fetchedSeries) = try await (categoriesTask, seriesTask)
 
-            categories = fetchedCategories
+            // An empty list from a flaky refresh must not wipe sections that are
+            // already on screen — keep the last known good set instead.
+            if !fetchedCategories.isEmpty {
+                categories = fetchedCategories
+            }
             seriesList = fetchedSeries
             recomputeSectionCounts()
             // Deliberately not awaited: the catalog is already on screen, and the
             // write is only about the next cold start.
-            Task { await dependencies.catalogStore.persistSeries(fetchedSeries, sourceID: account.sourceID) }
+            Task {
+                await dependencies.catalogStore.persistSeries(fetchedSeries, sourceID: account.sourceID)
+                await dependencies.catalogStore.persistCategories(
+                    fetchedCategories,
+                    sourceID: account.sourceID,
+                    kind: .series
+                )
+            }
         } catch {
             errorMessage = Self.errorMessage(for: error)
         }

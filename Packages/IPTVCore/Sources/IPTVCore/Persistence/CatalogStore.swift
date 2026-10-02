@@ -56,7 +56,60 @@ public actor CatalogStore {
         }
     }
 
+    /// Categories are read back in the provider's own order, so sections stay put
+    /// between launches instead of reshuffling.
+    public func cachedCategories(sourceID: String, kind: ContentKind) -> [MediaCategory] {
+        let kindRaw = kind.rawValue
+        let descriptor = FetchDescriptor<CatalogCategory>(
+            predicate: #Predicate { $0.sourceID == sourceID && $0.kindRaw == kindRaw },
+            sortBy: [SortDescriptor(\.sortIndex)]
+        )
+        guard let rows = try? modelContext.fetch(descriptor) else { return [] }
+        return rows.map { MediaCategory(id: $0.providerID, name: $0.name) }
+    }
+
     // MARK: - Writes
+
+    /// Replaces the stored set for this source and kind: categories the provider has
+    /// dropped are removed, so a stale section can't linger forever pointing at
+    /// nothing.
+    public func persistCategories(_ categories: [MediaCategory], sourceID: String, kind: ContentKind) {
+        guard !categories.isEmpty else { return }
+
+        let kindRaw = kind.rawValue
+        let descriptor = FetchDescriptor<CatalogCategory>(
+            predicate: #Predicate { $0.sourceID == sourceID && $0.kindRaw == kindRaw }
+        )
+        let existing = (try? modelContext.fetch(descriptor)) ?? []
+        var byID = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+
+        var liveIDs = Set<String>()
+        for (index, category) in categories.enumerated() {
+            let id = CatalogCategory.makeID(sourceID: sourceID, kind: kind, providerID: category.id)
+            liveIDs.insert(id)
+            if let row = byID[id] {
+                guard row.name != category.name || row.sortIndex != index else { continue }
+                row.name = category.name
+                row.sortIndex = index
+                row.lastSyncedAt = .now
+            } else {
+                let row = CatalogCategory(
+                    sourceID: sourceID,
+                    kind: kind,
+                    providerID: category.id,
+                    name: category.name,
+                    sortIndex: index
+                )
+                modelContext.insert(row)
+                byID[id] = row
+            }
+        }
+
+        for row in existing where !liveIDs.contains(row.id) {
+            modelContext.delete(row)
+        }
+        try? modelContext.save()
+    }
 
     public func persistMovies(_ summaries: [MovieSummary], sourceID: String) {
         var byKey = existingByKey(ofType: Movie.self)

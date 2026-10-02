@@ -49,6 +49,27 @@ public final class DownloadManager: NSObject {
     private static let connectionWaitSeconds: Double = 30
     private static let maximumConnectionWaitAttempts = 60
 
+    /// Shown with the address (credentials blanked) because when a panel serves some
+    /// titles and refuses others, the URL is the only thing that distinguishes them.
+    private static func notFoundMessage(statusCode: Int, url: String) -> String {
+        "The server has nothing at this address (HTTP \(statusCode)). If other titles "
+            + "download fine, this one may use a different file type on the server.
+"
+            + redactedURL(url)
+    }
+
+    /// Blanks the username and password path segments.
+    static func redactedURL(_ urlString: String) -> String {
+        guard var components = URLComponents(string: urlString) else { return urlString }
+        var segments = components.path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        if segments.count >= 4 {
+            segments[2] = "***"
+            segments[3] = "***"
+        }
+        components.path = segments.joined(separator: "/")
+        return components.url?.absoluteString ?? urlString
+    }
+
     private static func refusalMessage(statusCode: Int) -> String {
         "The server refused the download (HTTP \(statusCode)) — usually too many "
             + "connections open on the account. Stop any playback and try again."
@@ -509,8 +530,16 @@ extension DownloadManager: URLSessionDataDelegate {
                 // is wrong: the very first request is exactly when another connection
                 // is most likely to still be open, and that made a recoverable refusal
                 // kill the download outright.
-                if Self.retryableStatusCodes.contains(http.statusCode) {
+                // A refusal is only read as "account busy" once this download has
+                // actually transferred something. Before that, the far likelier
+                // explanation is that the address itself is wrong — and reporting
+                // that as "waiting for a free connection" hides a real 404 behind a
+                // status that never resolves.
+                let hasTransferredBefore = bytesOnDisk(for: contentKey) > 0
+                if Self.retryableStatusCodes.contains(http.statusCode), hasTransferredBefore {
                     waitForFreeConnection(download, message: Self.refusalMessage(statusCode: http.statusCode))
+                } else if Self.retryableStatusCodes.contains(http.statusCode) {
+                    fail(download, message: Self.notFoundMessage(statusCode: http.statusCode, url: download.sourceStreamURLString))
                 } else {
                     fail(download, message: "The server refused the download (HTTP \(http.statusCode)).")
                 }

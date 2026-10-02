@@ -19,6 +19,10 @@ final class VLCPlaybackController {
     private var hasReportedFinish = false
     private var hasStartedPlayback = false
     private var lastProgressReportAt = Date.distantPast
+    private var startedAt = Date.distantPast
+    /// VLC will sit on a dead URL indefinitely without reporting `.error`, which is
+    /// how a stream the panel refuses turns into a spinner that never resolves.
+    private static let startTimeoutSeconds: TimeInterval = 25
 
     private(set) var positionSeconds: Double = 0
     private(set) var durationSeconds: Double = 0
@@ -41,6 +45,7 @@ final class VLCPlaybackController {
         pendingResumeSeconds = seconds
         configureAudioSession()
         player.media = VLCMedia(url: url)
+        startedAt = Date()
         player.play()
         isPlaying = true
         startPolling()
@@ -120,6 +125,17 @@ final class VLCPlaybackController {
 
         if player.state == .error {
             errorMessage = "VLC couldn't open this stream."
+            pollTimer?.invalidate()
+            pollTimer = nil
+            return
+        }
+
+        // Nothing has played after the timeout: the stream is not coming. Say so,
+        // rather than spinning forever with no way to tell what went wrong.
+        if !hasStartedPlayback, Date().timeIntervalSince(startedAt) > Self.startTimeoutSeconds {
+            errorMessage = "The stream didn't start. The server may not have this "
+                + "episode at this address, or all your account's connections are in use."
+            isBuffering = false
             pollTimer?.invalidate()
             pollTimer = nil
             return

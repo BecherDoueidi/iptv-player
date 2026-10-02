@@ -69,9 +69,11 @@ public final class DownloadManager: NSObject {
         return components.url?.absoluteString ?? urlString
     }
 
-    private static func refusalMessage(statusCode: Int) -> String {
+    private static func refusalMessage(statusCode: Int, url: String) -> String {
         "The server refused the download (HTTP \(statusCode)) — usually too many "
-            + "connections open on the account. Stop any playback and try again."
+            + "connections open on the account. Stop any playback and try again.
+"
+            + redactedURL(url)
     }
 
     private var session: URLSession!
@@ -105,6 +107,10 @@ public final class DownloadManager: NSObject {
     /// Transfers parked for playback, so they can be picked up again afterwards
     /// instead of leaving the user to restart them by hand.
     private var suspendedForPlayback: Set<String> = []
+    /// Downloads that have actually received bytes from the server since the app
+    /// launched. A leftover `.part` file is not evidence of that — it may be from a
+    /// previous run, or from an attempt that died before any data arrived.
+    private var receivedDataThisSession: Set<String> = []
     /// Last progress sample per transfer, for the speed readout.
     private var lastSpeedSample: [String: (at: Date, bytes: Int64)] = [:]
 
@@ -158,8 +164,10 @@ public final class DownloadManager: NSObject {
         )
         modelContext.insert(download)
         downloadsByContentKey[contentKey] = download
-        // A fresh enqueue starts from zero — drop any partial left by a previous attempt.
+        // A fresh enqueue starts from zero — drop any partial left by a previous attempt,
+        // and forget that an earlier attempt ever received data.
         try? FileManager.default.removeItem(at: partFileURL(for: contentKey))
+        receivedDataThisSession.remove(contentKey)
         resetAttemptCounters(for: contentKey)
         try? modelContext.save()
 
@@ -251,6 +259,7 @@ public final class DownloadManager: NSObject {
         consecutiveEmptyAttempts[contentKey] = nil
         connectionWaitAttempts[contentKey] = nil
         lastSpeedSample[contentKey] = nil
+        receivedDataThisSession.remove(contentKey)
         modelContext.delete(download)
         try? modelContext.save()
         releaseSlot(contentKey: contentKey)
@@ -534,9 +543,15 @@ extension DownloadManager: URLSessionDataDelegate {
                 // explanation is that the address itself is wrong — and reporting
                 // that as "waiting for a free connection" hides a real 404 behind a
                 // status that never resolves.
-                let hasTransferredBefore = bytesOnDisk(for: contentKey) > 0
+                let hasTransferredBefore = receivedDataThisSession.contains(contentKey)
                 if Self.retryableStatusCodes.contains(http.statusCode), hasTransferredBefore {
-                    waitForFreeConnection(download, message: Self.refusalMessage(statusCode: http.statusCode))
+                    waitForFreeConnection(
+                        download,
+                        message: Self.refusalMessage(
+                            statusCode: http.statusCode,
+                            url: download.sourceStreamURLString
+                        )
+                    )
                 } else if Self.retryableStatusCodes.contains(http.statusCode) {
                     fail(download, message: Self.notFoundMessage(statusCode: http.statusCode, url: download.sourceStreamURLString))
                 } else {
@@ -580,6 +595,7 @@ extension DownloadManager: URLSessionDataDelegate {
             // Written the moment it arrives. This is the whole point of the redesign:
             // the `.part` file is always an accurate record of what has been received,
             // so a connection dropped mid-segment costs a reconnect and nothing else.
+            receivedDataThisSession.insert(contentKey)
             do {
                 try handle.write(contentsOf: data)
             } catch {

@@ -10,6 +10,7 @@ struct PlayerScreen: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.appDependencies) private var dependencies
     @AppStorage("autoplayNextEpisode") private var autoplayNextEpisode = false
 
     @State private var controller = VLCPlaybackController()
@@ -49,6 +50,9 @@ struct PlayerScreen: View {
             scheduleAutoHide()
         }
         .task {
+            // On a one-connection account a running download and playback cannot
+            // coexist; without this the player just spins forever.
+            dependencies.downloadManager.suspendForPlayback()
             controller.onProgress = { position, duration in
                 // A live stream has no position worth remembering.
                 guard !request.isLive else { return }
@@ -61,6 +65,7 @@ struct PlayerScreen: View {
         .onDisappear {
             hideControlsTask?.cancel()
             controller.stop()
+            dependencies.downloadManager.resumeAfterPlayback()
         }
     }
 

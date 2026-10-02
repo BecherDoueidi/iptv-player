@@ -79,6 +79,12 @@ public final class DownloadManager: NSObject {
     /// from `tasksByContentKey`, which is empty during the backoff.
     private var activeKeys: Set<String> = []
     private var connectionWaitAttempts: [String: Int] = [:]
+    /// True while the player is on screen. Downloads stand down entirely: the account
+    /// has one connection, and a download holding it means nothing plays.
+    private var isPlaybackActive = false
+    /// Transfers parked for playback, so they can be picked up again afterwards
+    /// instead of leaving the user to restart them by hand.
+    private var suspendedForPlayback: Set<String> = []
     /// Last progress sample per transfer, for the speed readout.
     private var lastSpeedSample: [String: (at: Date, bytes: Int64)] = [:]
 
@@ -163,18 +169,46 @@ public final class DownloadManager: NSObject {
         resume(contentKey: contentKey)
     }
 
-    /// Called when the app returns to the foreground. Transfers only run while the app
-    /// is active (see `init`), so anything left mid-flight is picked up here —
-    /// continuing from the `.part` file rather than restarting.
-    public func resumeInterruptedDownloads() {
+    /// Called when the player opens. Watching something is always more urgent than a
+    /// background transfer, and on a one-connection account they cannot coexist — a
+    /// running download makes playback hang on a spinner forever.
+    public func suspendForPlayback() {
+        isPlaybackActive = true
         guard let modelContext else { return }
-        guard let downloads = try? modelContext.fetch(FetchDescriptor<Download>()) else { return }
-        for download in downloads
-        where download.state == .downloading || download.state == .queued || download.state == .waitingForConnection {
-            guard tasksByContentKey[download.contentKey] == nil,
-                  !activeKeys.contains(download.contentKey) else { continue }
-            downloadsByContentKey[download.contentKey] = download
-            resetAttemptCounters(for: download.contentKey)
+        for contentKey in activeKeys {
+            guard let download = cachedDownload(forKey: contentKey) else { continue }
+            suspendedForPlayback.insert(contentKey)
+            stopSegment(contentKey: contentKey)
+            download.bytesReceived = bytesOnDisk(for: contentKey)
+            download.state = .queued
+            download.lastError = "Paused while playing"
+        }
+        activeKeys.removeAll()
+        try? modelContext.save()
+    }
+
+    /// Called when the player closes.
+    public func resumeAfterPlayback() {
+        isPlaybackActive = false
+        guard !suspendedForPlayback.isEmpty else { return }
+        suspendedForPlayback.removeAll()
+        startNextIfPossible()
+    }
+
+    /// Called when the app returns to the foreground. Transfers only run while the app
+    /// is active (see `init`), so one interrupted by backgrounding is picked up here —
+    /// continuing from the `.part` file rather than restarting.
+    ///
+    /// Only transfers that were running *in this session* resume. Anything left over
+    /// from a previous launch stays paused until the user asks for it: silently
+    /// claiming the account's only connection the moment the app opens is what made
+    /// playback hang on a spinner with no visible cause.
+    public func resumeInterruptedDownloads() {
+        guard let modelContext, !isPlaybackActive else { return }
+        for contentKey in activeKeys where tasksByContentKey[contentKey] == nil {
+            guard let download = cachedDownload(forKey: contentKey),
+                  download.state != .completed else { continue }
+            resetAttemptCounters(for: contentKey)
             download.state = .queued
         }
         try? modelContext.save()
@@ -207,6 +241,7 @@ public final class DownloadManager: NSObject {
     /// `startSegment` directly, so the concurrency cap can't be bypassed.
     private func startNextIfPossible() {
         guard let modelContext else { return }
+        guard !isPlaybackActive else { return }
         guard activeKeys.count < Self.maximumConcurrentTransfers else { return }
 
         let descriptor = FetchDescriptor<Download>(

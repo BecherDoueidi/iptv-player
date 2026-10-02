@@ -53,8 +53,7 @@ public final class DownloadManager: NSObject {
     /// titles and refuses others, the URL is the only thing that distinguishes them.
     private static func notFoundMessage(statusCode: Int, url: String) -> String {
         "The server has nothing at this address (HTTP \(statusCode)). If other titles "
-            + "download fine, this one may use a different file type on the server.
-"
+            + "download fine, this one may use a different file type on the server.\n"
             + redactedURL(url)
     }
 

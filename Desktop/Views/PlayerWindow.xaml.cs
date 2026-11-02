@@ -15,6 +15,7 @@ public partial class PlayerWindow : Window
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(25);
 
     private readonly MediaPlayer? _player;
+    private readonly Media? _media;
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DateTime _startedAt = DateTime.UtcNow;
     private readonly Uri _url;
@@ -36,8 +37,8 @@ public partial class PlayerWindow : Window
         _player = new MediaPlayer(App.LibVlc);
         VideoView.MediaPlayer = _player;
 
-        using var media = new Media(App.LibVlc, url);
-        _player.Play(media);
+        _media = new Media(App.LibVlc, url);
+        _player.Play(_media);
 
         _timer.Tick += OnTick;
         _timer.Start();
@@ -121,6 +122,7 @@ public partial class PlayerWindow : Window
             VideoView.MediaPlayer = null;
             _player.Dispose();
         }
+        _media?.Dispose();
         base.OnClosed(e);
     }
 }

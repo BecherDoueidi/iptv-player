@@ -36,15 +36,41 @@ public partial class MainWindow : Window
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
+        => await Guarded("restore session", async () =>
+        {
+            var saved = _credentials.Load();
+            if (saved is null) return;
+            await SignInAsync(saved, persist: false);
+        });
+
+    /// <summary>
+    /// WPF terminates the process when an exception escapes an `async void` event
+    /// handler — which is precisely how this app died on its first run, leaving only
+    /// an "unhandled .NET exception" in Windows Error Reporting. Every handler runs
+    /// through here so a failure becomes a status line and a log entry instead.
+    /// </summary>
+    private async Task Guarded(string context, Func<Task> work)
     {
-        var saved = _credentials.Load();
-        if (saved is null) return;
-        await SignInAsync(saved, persist: false);
+        try
+        {
+            await work();
+        }
+        catch (XtreamException ex)
+        {
+            StatusBar.Text = ex.Message;
+            ErrorLog.Write(context, ex);
+        }
+        catch (Exception ex)
+        {
+            StatusBar.Text = $"Something went wrong ({ex.GetType().Name}). Details in {ErrorLog.FilePath}";
+            ErrorLog.Write(context, ex);
+        }
     }
 
     // MARK: - Sign in
 
     private async void OnSignIn(object sender, RoutedEventArgs e)
+        => await Guarded("sign in", async () =>
     {
         var url = CredentialStore.NormaliseServerUrl(ServerBox.Text);
         if (url is null)
@@ -62,7 +88,7 @@ public partial class MainWindow : Window
         // whitespace, and the panel rejects them without saying why.
         await SignInAsync(new XtreamCredentials(url, UsernameBox.Text.Trim(), PasswordBox.Password.Trim()),
                           persist: true);
-    }
+    });
 
     private async Task SignInAsync(XtreamCredentials credentials, bool persist)
     {
@@ -129,15 +155,17 @@ public partial class MainWindow : Window
     // MARK: - Catalog
 
     private async void OnKindChanged(object sender, RoutedEventArgs e)
-    {
-        if (_signedIn is null) return;
-        _kind = MoviesTab.IsChecked == true ? ContentKind.Movie
-              : SeriesTab.IsChecked == true ? ContentKind.Series
-              : ContentKind.Live;
-        await LoadKindAsync(_kind);
-    }
+        => await Guarded("switch tab", async () =>
+        {
+            if (_signedIn is null) return;
+            _kind = MoviesTab.IsChecked == true ? ContentKind.Movie
+                  : SeriesTab.IsChecked == true ? ContentKind.Series
+                  : ContentKind.Live;
+            await LoadKindAsync(_kind);
+        });
 
-    private async void OnRefresh(object sender, RoutedEventArgs e) => await RefreshKindAsync(_kind);
+    private async void OnRefresh(object sender, RoutedEventArgs e)
+        => await Guarded("refresh", () => RefreshKindAsync(_kind));
 
     private async Task LoadKindAsync(ContentKind kind)
     {
@@ -250,6 +278,7 @@ public partial class MainWindow : Window
     // MARK: - Playback
 
     private async void OnItemActivated(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        => await Guarded("open item", async () =>
     {
         if (_signedIn is null || ItemList.SelectedItem is not CatalogItem item) return;
 
@@ -264,7 +293,7 @@ public partial class MainWindow : Window
             : XtreamClient.LiveStreamUrl(_signedIn, item.Id);
 
         new PlayerWindow(url, item.Title) { Owner = this }.Show();
-    }
+    });
 
     private async Task ShowEpisodesAsync(CatalogItem series)
     {

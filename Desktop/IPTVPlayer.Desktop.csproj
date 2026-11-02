@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- .NET 8 is the long-term-support release; nothing here needs anything newer. -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>IPTVPlayer</AssemblyName>
+    <RootNamespace>IPTVPlayer.Desktop</RootNamespace>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <!-- x64 only: the bundled VLC natives are architecture-specific. -->
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Same engine as the iOS app's VLCKit, for the same reason: a typical Xtream
+         catalog is full of MKV, AVI and raw TS, which the platform player can't open.
+         VideoLAN.LibVLC.Windows ships the native libraries inside the build output,
+         so there is no separate VLC install to go wrong. -->
+    <PackageReference Include="LibVLCSharp" Version="3.8.2" />
+    <PackageReference Include="LibVLCSharp.WPF" Version="3.8.2" />
+    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.20" />
+  </ItemGroup>
+
+</Project>

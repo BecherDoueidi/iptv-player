@@ -25,10 +25,14 @@ struct PlayerScreen: View {
             Color.black.ignoresSafeArea()
             VLCVideoSurface(controller: controller).ignoresSafeArea()
 
-            if controller.isBuffering && controller.errorMessage == nil {
+            if controller.isBuffering && controller.errorMessage == nil && controller.reconnectStatus == nil {
                 ProgressView()
                     .tint(.white)
                     .scaleEffect(1.4)
+            }
+
+            if let status = controller.reconnectStatus {
+                reconnectOverlay(status)
             }
 
             if controlsVisible && controller.errorMessage == nil {
@@ -59,7 +63,7 @@ struct PlayerScreen: View {
                 saveProgress(position: position, duration: duration)
             }
             controller.onFinished = { handleFinished() }
-            controller.start(url: request.url, resumeAt: request.isLive ? 0 : resumePosition())
+            controller.start(url: request.url, resumeAt: request.isLive ? 0 : resumePosition(), isLive: request.isLive)
             scheduleAutoHide()
         }
         .onDisappear {
@@ -178,6 +182,24 @@ struct PlayerScreen: View {
         )
     }
 
+    /// Deliberately not an error: the stream dropped and the app is already dealing
+    /// with it, so this says what is happening rather than asking the user to act.
+    private func reconnectOverlay(_ status: String) -> some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .tint(.white)
+                .scaleEffect(1.2)
+            Text(status)
+                .font(.footnote)
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+        }
+        .padding(20)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .padding(32)
+    }
+
     private var liveIndicator: some View {
         HStack(spacing: 6) {
             Circle().fill(.red).frame(width: 8, height: 8)
@@ -204,8 +226,12 @@ struct PlayerScreen: View {
                 .foregroundStyle(.white.opacity(0.5))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal)
-            Button("Close") { dismiss() }
-                .buttonStyle(.borderedProminent)
+            HStack(spacing: 12) {
+                Button("Try Again") { controller.retryNow() }
+                    .buttonStyle(.borderedProminent)
+                Button("Close") { dismiss() }
+                    .buttonStyle(.bordered)
+            }
         }
         .padding(24)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
